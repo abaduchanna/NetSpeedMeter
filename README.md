@@ -1,6 +1,25 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.0.2 — floating mode that is ACTUALLY topmost + one-paste diagnostics
+## ✅ NEW in v2.1.0 — Units menu, Theme menu, colored speeds (up RED, down GREEN)
+
+Right-click the tray icon (or the widget) — three new controls at the top of
+the menu, all persisted in `HKCU\Software\NetSpeedMonitor`:
+
+1. **Units** — `Auto` (scales B/s → KB/s → MB/s → GB/s automatically, the old
+   behavior), `KB/s` (always), or `MB/s` (always, shown with 2 decimals, e.g.
+   `↓ 2.47 MB/s`). Applies instantly, survives restarts.
+2. **Theme** — `Auto (match taskbar)` (pixel-samples the taskbar background
+   every 5 s so the widget is seamless — the old behavior), `Dark` (fixed
+   near-black bar), or `Light` (fixed near-white bar). Dark/Light are perfect
+   for the floating bar, and the floating bar now uses the theme background
+   instead of a black guess.
+3. **Colored speeds** — checked by default: the upload arrow + value is drawn
+   **RED** (↑) and the download arrow + value is drawn **GREEN** (↓) — the
+   universal convention. Arrow colors automatically pick bright variants on
+   dark backgrounds and dark variants on light backgrounds so they always
+   stay readable. Uncheck for the classic single-color look.
+
+## v2.0.2 — floating mode that is ACTUALLY topmost + one-paste diagnostics
 
 v2.0.1 users reported: **"Floating mode is checked but still nothing shows."**
 Root cause found — two real bugs:

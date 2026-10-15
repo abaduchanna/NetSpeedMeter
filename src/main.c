@@ -37,6 +37,22 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.1.0 features (owner requests):
+//  10. UNITS menu: Auto (B/s .. GB/s scaling), KB/s, MB/s - persisted.
+//  11. THEME menu: Auto (matches taskbar via pixel sampling), Dark, Light
+//      - persisted; floating bar gets a proper themed background too.
+//  12. COLORED SPEEDS: upload drawn RED (top arrow), download drawn GREEN
+//      (bottom arrow) - the universal convention. Toggleable; arrow colors
+//      auto-pick bright/dark variants from the background luminance.
+//
+// v2.1.0 features (owner requests):
+//  10. UNITS menu: Auto (B/s .. GB/s scaling), KB/s, MB/s - persisted.
+//  11. THEME menu: Auto (matches taskbar via pixel sampling), Dark, Light
+//      - persisted; floating bar gets a proper themed background too.
+//  12. COLORED SPEEDS: upload drawn RED (top arrow), download drawn GREEN
+//      (bottom arrow) - the universal convention. Toggleable; arrow colors
+//      auto-pick bright/dark variants from the background luminance.
+//
 // Build (MSVC):  cl /O2 /W3 /DUNICODE /D_UNICODE main.c icon.res ^
 //                 /Fe:NetSpeedMonitor.exe /link /SUBSYSTEM:WINDOWS ^
 //                 user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib
@@ -55,7 +71,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.0.2"
+#define APP_VERSION  L"2.1.0"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -66,6 +82,13 @@
 #define IDM_EXIT       20004
 #define IDM_FLOAT      20005
 #define IDM_DIAG       20006
+#define IDM_UNITS_AUTO 20010
+#define IDM_UNITS_KB   20011
+#define IDM_UNITS_MB   20012
+#define IDM_THEME_AUTO 20020
+#define IDM_THEME_DARK 20021
+#define IDM_THEME_LITE 20022
+#define IDM_COLOR      20023
 
 typedef struct {
     double down;   // bytes per second
@@ -83,7 +106,14 @@ static BOOL   g_floatMode      = FALSE;  // user-forced floating bar mode
 static int    g_fallbackTries  = 0;
 static COLORREF g_bgColor      = RGB(32, 32, 32);
 static COLORREF g_textColor    = RGB(240, 240, 240);
+static COLORREF g_upColor      = RGB(255, 112, 100);   // upload RED
+static COLORREF g_downColor    = RGB(110, 231, 133);   // download GREEN
 static WCHAR  g_text[160]      = L"\x2191 0 B/s  \x2193 0 B/s";
+static WCHAR  g_upText[80]     = L"\x2191 0 B/s";
+static WCHAR  g_downText[80]   = L"\x2193 0 B/s";
+static int    g_units          = 0;   // 0=auto  1=KB/s  2=MB/s
+static int    g_theme          = 0;   // 0=auto  1=dark  2=light
+static BOOL   g_colorSpeeds    = TRUE; // up red / down green
 static int    g_colorTick      = 0;
 static int    g_trayTick       = 0;
 static ULONG64 g_lastTick      = 0;
@@ -151,9 +181,18 @@ static UINT DpiOfTaskbar(HWND taskbar)
 }
 
 // ---------------------------------------------------------------- speed
+// g_units: 0 = auto-scale (B/s .. GB/s), 1 = always KB/s, 2 = always MB/s
 static void FormatRate(double bps, WCHAR* out, size_t cch)
 {
     if (bps < 0) bps = 0;
+    if (g_units == 1) {
+        swprintf_s(out, cch, L"%.1f KB/s", bps / 1024.0);
+        return;
+    }
+    if (g_units == 2) {
+        swprintf_s(out, cch, L"%.2f MB/s", bps / (1024.0 * 1024.0));
+        return;
+    }
     if (bps >= 1024.0 * 1024.0 * 1024.0)
         swprintf_s(out, cch, L"%.2f GB/s", bps / (1024.0 * 1024.0 * 1024.0));
     else if (bps >= 1024.0 * 1024.0)
@@ -223,13 +262,17 @@ static void UpdateSpeedText(void)
         WCHAR d[40], u[40];
         FormatRate(down, d, 40);
         FormatRate(up,   u, 40);
-        swprintf_s(g_text, 160, L"\x2191 %s  \x2193 %s", u, d);
+        swprintf_s(g_upText,   80, L"\x2191 %s", u);
+        swprintf_s(g_downText, 80, L"\x2193 %s", d);
+        swprintf_s(g_text,    160, L"%s  %s", g_upText, g_downText);
     }
     g_lastTick = now;
 }
 
 // ------------------------------------------------------------- taskbar
-// Sample the taskbar's rendered background so our solid fill is seamless.
+// Sample the taskbar's rendered background so our solid fill is seamless
+// (theme = Auto only). Sets the background color; text/arrow colors are
+// derived from background luminance in DeriveArrowColors().
 static void SampleTaskbarColor(void)
 {
     RECT rb;
@@ -245,13 +288,34 @@ static void SampleTaskbarColor(void)
     if (dc) {
         COLORREF c = GetPixel(dc, sx, rb.top + 2);
         ReleaseDC(g_hTaskbar, dc);
-        if (c != CLR_INVALID) {
-            g_bgColor = c;
-            int r = GetRValue(c), g = GetGValue(c), b = GetBValue(c);
-            int lum = (r * 299 + g * 587 + b * 114) / 1000;
-            g_textColor = (lum > 128) ? RGB(24, 24, 24) : RGB(240, 240, 240);
-        }
+        if (c != CLR_INVALID) g_bgColor = c;
     }
+}
+
+// Text + arrow colors from the background luminance. Dark backgrounds get
+// bright arrows, light backgrounds get dark arrows (always readable).
+static void DeriveArrowColors(void)
+{
+    int r = GetRValue(g_bgColor), g = GetGValue(g_bgColor), b = GetBValue(g_bgColor);
+    int lum = (r * 299 + g * 587 + b * 114) / 1000;
+    if (lum > 128) {
+        g_textColor = RGB(25, 25, 25);
+        g_upColor   = RGB(191, 34, 34);     // dark red on light bg
+        g_downColor = RGB(22, 101, 52);     // dark green on light bg
+    } else {
+        g_textColor = RGB(235, 235, 235);
+        g_upColor   = RGB(255, 112, 100);   // bright red on dark bg
+        g_downColor = RGB(110, 231, 133);   // bright green on dark bg
+    }
+}
+
+// Apply the selected theme (g_theme: 0=auto 1=dark 2=light).
+static void ApplyTheme(void)
+{
+    if (g_theme == 1)      g_bgColor = RGB(24, 24, 28);
+    else if (g_theme == 2) g_bgColor = RGB(243, 243, 243);
+    else                   SampleTaskbarColor();
+    DeriveArrowColors();
 }
 
 static void DestroyFont(void)
@@ -322,8 +386,8 @@ static void TrayRemove(void)
     }
 }
 
-// ------------------------------------------------------------- mode store
-static void LoadFloatMode(void)
+// ------------------------------------------------------------- settings
+static void LoadSettings(void)
 {
     HKEY k;
     g_floatMode = FALSE;
@@ -334,18 +398,45 @@ static void LoadFloatMode(void)
         if (RegQueryValueExW(k, L"Mode", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
             && type == REG_SZ && lstrcmpiW(v, L"floating") == 0)
             g_floatMode = TRUE;
+        cb = sizeof(v);
+        if (RegQueryValueExW(k, L"Units", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
+            && type == REG_SZ) {
+            if (lstrcmpiW(v, L"kb") == 0) g_units = 1;
+            else if (lstrcmpiW(v, L"mb") == 0) g_units = 2;
+            else g_units = 0;
+        }
+        cb = sizeof(v);
+        if (RegQueryValueExW(k, L"Theme", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
+            && type == REG_SZ) {
+            if (lstrcmpiW(v, L"dark") == 0) g_theme = 1;
+            else if (lstrcmpiW(v, L"light") == 0) g_theme = 2;
+            else g_theme = 0;
+        }
+        DWORD dw = 0, cbd = sizeof(DWORD);
+        if (RegQueryValueExW(k, L"Colored", NULL, &type, (BYTE*)&dw, &cbd) == ERROR_SUCCESS
+            && type == REG_DWORD)
+            g_colorSpeeds = dw ? TRUE : FALSE;
         RegCloseKey(k);
     }
 }
 
-static void SaveFloatMode(void)
+static void SaveSettings(void)
 {
     HKEY k;
     if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\NetSpeedMonitor",
                         0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) == ERROR_SUCCESS) {
-        RegSetValueExW(k, L"Mode", 0, REG_SZ,
-                       (const BYTE*)(g_floatMode ? L"floating" : L"embedded"),
-                       (DWORD)((lstrlenW(g_floatMode ? L"floating" : L"embedded") + 1) * sizeof(WCHAR)));
+        const WCHAR* mode = g_floatMode ? L"floating" : L"embedded";
+        RegSetValueExW(k, L"Mode", 0, REG_SZ, (const BYTE*)mode,
+                       (DWORD)((lstrlenW(mode) + 1) * sizeof(WCHAR)));
+        const WCHAR* units = (g_units == 1) ? L"kb" : (g_units == 2) ? L"mb" : L"auto";
+        RegSetValueExW(k, L"Units", 0, REG_SZ, (const BYTE*)units,
+                       (DWORD)((lstrlenW(units) + 1) * sizeof(WCHAR)));
+        const WCHAR* theme = (g_theme == 1) ? L"dark" : (g_theme == 2) ? L"light" : L"auto";
+        RegSetValueExW(k, L"Theme", 0, REG_SZ, (const BYTE*)theme,
+                       (DWORD)((lstrlenW(theme) + 1) * sizeof(WCHAR)));
+        DWORD colored = g_colorSpeeds ? 1 : 0;
+        RegSetValueExW(k, L"Colored", 0, REG_DWORD,
+                       (const BYTE*)&colored, sizeof(DWORD));
         RegCloseKey(k);
     }
 }
@@ -506,7 +597,7 @@ static void CopyDiagToClipboard(HWND hwnd)
     swprintf_s(buf, 4096,
         L"NetSpeedMonitor diagnostics\r\n"
         L"version=%s\r\n"
-        L"floatMode=%d embedded=%d\r\n"
+        L"floatMode=%d embedded=%d units=%d theme=%d colored=%d\r\n"
         L"hwnd=%p parent=%p visible=%d\r\n"
         L"win rect=(%ld,%ld)-(%ld,%ld)\r\n"
         L"taskbar=%p rect=(%ld,%ld)-(%ld,%ld)\r\n"
@@ -514,6 +605,7 @@ static void CopyDiagToClipboard(HWND hwnd)
         L"text=%s\r\n",
         APP_VERSION,
         (int)g_floatMode, (int)g_embedded,
+        g_units, g_theme, (int)g_colorSpeeds,
         (void*)g_hwnd, (void*)GetParent(g_hwnd), IsWindowVisible(g_hwnd),
         (long)rme.left, (long)rme.top, (long)rme.right, (long)rme.bottom,
         (void*)g_hTaskbar, (long)rtb.left, (long)rtb.top,
@@ -554,9 +646,33 @@ static void OnPaint(HWND hwnd)
     if (g_font) {
         HGDIOBJ of = SelectObject(mem, g_font);
         SetBkMode(mem, TRANSPARENT);
-        SetTextColor(mem, g_textColor);
-        DrawTextW(mem, g_text, -1, &rc,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (g_colorSpeeds) {
+            // colored layout: up (red) + separator + down (green), centered
+            SIZE su, ss, sd;
+            GetTextExtentPoint32W(mem, g_upText,   (int)wcslen(g_upText),   &su);
+            GetTextExtentPoint32W(mem, L"  ", 2, &ss);
+            GetTextExtentPoint32W(mem, g_downText, (int)wcslen(g_downText), &sd);
+            int total = su.cx + ss.cx + sd.cx;
+            int x0 = (rc.right - total) / 2;
+            if (x0 < 0) x0 = 0;
+            RECT r1 = { x0, rc.top, x0 + su.cx, rc.bottom };
+            SetTextColor(mem, g_upColor);
+            DrawTextW(mem, g_upText, -1, &r1,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            RECT r2 = { x0 + su.cx, rc.top, x0 + su.cx + ss.cx, rc.bottom };
+            SetTextColor(mem, g_textColor);
+            DrawTextW(mem, L"  ", -1, &r2,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            RECT r3 = { x0 + su.cx + ss.cx, rc.top,
+                        x0 + su.cx + ss.cx + sd.cx, rc.bottom };
+            SetTextColor(mem, g_downColor);
+            DrawTextW(mem, g_downText, -1, &r3,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        } else {
+            SetTextColor(mem, g_textColor);
+            DrawTextW(mem, g_text, -1, &rc,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
         SelectObject(mem, of);
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -606,6 +722,22 @@ static void ShowContextMenu(HWND hwnd)
 {
     HMENU m = CreatePopupMenu();
     if (!m) return;
+
+    HMENU mu = CreatePopupMenu();          // Units
+    AppendMenuW(mu, MF_STRING | (g_units == 0 ? MF_CHECKED : 0), IDM_UNITS_AUTO, L"Auto");
+    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"KB/s");
+    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"MB/s");
+
+    HMENU mt = CreatePopupMenu();          // Theme
+    AppendMenuW(mt, MF_STRING | (g_theme == 0 ? MF_CHECKED : 0), IDM_THEME_AUTO, L"Auto (match taskbar)");
+    AppendMenuW(mt, MF_STRING | (g_theme == 1 ? MF_CHECKED : 0), IDM_THEME_DARK, L"Dark");
+    AppendMenuW(mt, MF_STRING | (g_theme == 2 ? MF_CHECKED : 0), IDM_THEME_LITE, L"Light");
+
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)mu, L"&Units");
+    AppendMenuW(m, MF_POPUP, (UINT_PTR)mt, L"&Theme");
+    AppendMenuW(m, MF_STRING | (g_colorSpeeds ? MF_CHECKED : 0),
+                IDM_COLOR, L"Colored speeds (up red, down green)");
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_TASKMGR, L"Open &Task Manager");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0),
@@ -652,7 +784,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (++g_colorTick >= 5) {
             g_colorTick = 0;
-            SampleTaskbarColor();
+            if (g_theme == 0) {          // auto theme re-samples the taskbar
+                ApplyTheme();
+            }
             TrayUpdateTip();
         }
         InvalidateRect(hwnd, NULL, FALSE);
@@ -684,7 +818,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case IDM_FLOAT:
             g_floatMode = !g_floatMode;
-            SaveFloatMode();
+            SaveSettings();
             {
                 WCHAR b[80];
                 swprintf_s(b, 80, L"user toggled mode -> %s",
@@ -692,6 +826,29 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 LogLine(b);
             }
             RecalcAndPosition();     // apply instantly, not on the next tick
+            break;
+        case IDM_UNITS_AUTO:
+        case IDM_UNITS_KB:
+        case IDM_UNITS_MB:
+            g_units = (LOWORD(wp) == IDM_UNITS_KB) ? 1 :
+                      (LOWORD(wp) == IDM_UNITS_MB) ? 2 : 0;
+            SaveSettings();
+            UpdateSpeedText();
+            InvalidateRect(hwnd, NULL, FALSE);
+            break;
+        case IDM_THEME_AUTO:
+        case IDM_THEME_DARK:
+        case IDM_THEME_LITE:
+            g_theme = (LOWORD(wp) == IDM_THEME_DARK) ? 1 :
+                      (LOWORD(wp) == IDM_THEME_LITE) ? 2 : 0;
+            ApplyTheme();
+            SaveSettings();
+            InvalidateRect(hwnd, NULL, FALSE);
+            break;
+        case IDM_COLOR:
+            g_colorSpeeds = !g_colorSpeeds;
+            SaveSettings();
+            InvalidateRect(hwnd, NULL, FALSE);
             break;
         case IDM_DIAG:
             CopyDiagToClipboard(hwnd);
@@ -705,9 +862,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 L"NetSpeedMonitor - taskbar network speed display (v" APP_VERSION L")\r\n\r\n"
                 L"Embeds into the Windows 10/11 taskbar (SetParent technique,\r\n"
                 L"as pioneered by TrafficMonitor by zhongyang219).\r\n\r\n"
+                L"Menu: Units (Auto/KB/s/MB/s), Theme (Auto/Dark/Light),\r\n"
+                L"colored speeds (up red, down green).\r\n\r\n"
                 L"Not visible in the taskbar? Right-click the tray icon\r\n"
-                L"(hidden icons ^) and enable 'Floating mode' (v2.0.2 makes\r\n"
-                L"it truly topmost). Still stuck? Use 'Copy diagnostics'.\r\n\r\n"
+                L"(hidden icons ^) and enable 'Floating mode' (truly topmost).\r\n"
+                L"Still stuck? Use 'Copy diagnostics'.\r\n\r\n"
                 L"Double-click: Task Manager  |  Right-click: menu",
                 APP_NAME, MB_ICONINFORMATION);
             break;
@@ -762,7 +921,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
 
     g_dpi = DpiOfTaskbar(FindWindowW(L"Shell_TrayWnd", NULL));
 
-    LoadFloatMode();                  // BEFORE creation so the window is
+    LoadSettings();                   // BEFORE creation so the window is
                                       // born with WS_EX_TOPMOST if floating
     g_hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW | (g_floatMode ? WS_EX_TOPMOST : 0),
@@ -772,14 +931,14 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
     if (!g_hwnd) return 1;
 
     CreateFontForDpi();
-    SampleTaskbarColor();
+    ApplyTheme();
     UpdateSpeedText();
 
     {
-        WCHAR b[160];
-        swprintf_s(b, 160, L"start v%s: dpi=%u mode=%s win=%dx%d",
+        WCHAR b[220];
+        swprintf_s(b, 220, L"start v%s: dpi=%u mode=%s units=%d theme=%d colored=%d win=%dx%d",
                    APP_VERSION, g_dpi, g_floatMode ? L"floating" : L"embedded",
-                   g_winW, g_winH);
+                   g_units, g_theme, (int)g_colorSpeeds, g_winW, g_winH);
         LogLine(b);
     }
 
