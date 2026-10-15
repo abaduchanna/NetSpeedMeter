@@ -62,7 +62,9 @@ jobs:
       - name: Create release + attach assets
         shell: bash
         run: |
-          mv NetSpeedMonitor.exe NetSpeedMonitor-v2.1.1-x64.exe
+          find . -name 'NetSpeedMonitor.exe' -exec mv {} NetSpeedMonitor-v2.1.1-x64.exe \;
+          find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-2.1.1-x64-Setup.exe \;
+          ls -la NetSpeedMonitor-v2.1.1-x64.exe NetSpeedMeter-2.1.1-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
             --title "NetSpeedMeter ${GITHUB_REF_NAME} - installer edition" \
             --notes "## Downloads
