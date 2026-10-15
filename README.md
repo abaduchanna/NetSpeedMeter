@@ -1,6 +1,36 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.0.0 — NetSpeedMonitor.exe: the speed monitor that WORKS inside the Windows 11 taskbar
+## ✅ NEW in v2.0.1 — visibility hardening: tray icon + never-buried widget
+
+Some Windows 11 machines reported v2.0.0 as **"running but invisible"** — the
+process lived, but nothing appeared in the taskbar and there was no tray icon
+either (the old instance could not even be exited normally). v2.0.1 fixes that
+class of problem for good:
+
+1. **Tray icon is always added** — NetSpeedMonitor now shows up in the tray
+   (the `^` hidden-icons chevron near the clock). Right-click it for the menu
+   (Task Manager / Start with Windows / Floating mode / About / Exit); hover
+   shows the live speeds. The app can never be "lost" again.
+2. **Never-buried widget** — every second the widget re-asserts its z-order
+   (`HWND_TOP` among taskbar children) and visibility, so the taskbar's
+   composited (XAML) surface cannot permanently cover it. Show order now
+   matches TrafficMonitor exactly: `SetParent` → `ShowWindow` → position.
+3. **Floating mode** — if embedding still does not display on some future
+   Windows 11 build, right-click the tray icon (or widget) → **Floating
+   mode**: the bar runs topmost, docked just above the taskbar. The choice
+   is saved in `HKCU\Software\NetSpeedMonitor` and survives restarts.
+4. **Second-instance dialog with an escape hatch** — starting a second copy
+   now explains where the tray icon lives and offers **OK = open Task
+   Manager** so an older stuck instance can be ended in one click.
+5. **Diagnostic log** — `%LOCALAPPDATA%\NetSpeedMonitor\log.txt` records the
+   taskbar handle, `SetParent` result, position and visibility transitions,
+   so any remaining "invisible" report can be diagnosed from the log alone.
+
+**Upgrading from a stuck v2.0.0:** run the new exe → the dialog appears →
+click **OK** (opens Task Manager) → end `NetSpeedMonitor.exe` → run the new
+exe again. Or simply end it in Task Manager yourself first.
+
+## v2.0.0 — NetSpeedMonitor.exe: the speed monitor that WORKS inside the Windows 11 taskbar
 
 The original NetSpeedMonitor cannot ever appear in the Windows 11 taskbar —
 Microsoft removed taskbar *Toolbars* (the deskband mechanism the 2012 DLL used),

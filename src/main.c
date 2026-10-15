@@ -7,12 +7,27 @@
 //   which is exactly why it keeps working on Windows 11 where taskbar
 //   toolbars (the old NetSpeedMonitor approach) were removed.
 //
+// v2.0.1 hardening (fixes "running but invisible" reports):
+//   1. Tray icon is ALWAYS added (Shell_NotifyIconW) - the app can always be
+//      found in the tray (hidden icons) and exited from there.
+//   2. TrafficMonitor-exact show order: SetParent -> ShowWindow -> position,
+//      plus a per-second HWND_TOP re-assert so the widget cannot stay buried
+//      under the taskbar's rendered (XAML) surface on any Win11 build.
+//   3. Floating mode toggle (right-click menu): if the embed is still not
+//      visible on some machine, the bar can run topmost just above the
+//      taskbar instead. Choice is persisted in HKCU\Software\NetSpeedMonitor.
+//   4. Second-instance dialog now explains where to look and offers to open
+//      Task Manager so an older stuck instance can be ended in one click.
+//   5. Diagnostic log (%LOCALAPPDATA%\NetSpeedMonitor\log.txt) records the
+//      taskbar handle, SetParent result, position and visibility state so
+//      "invisible" reports can be diagnosed from the log alone.
+//
 // Build (MSVC):  cl /O2 /W3 /DUNICODE /D_UNICODE main.c icon.res ^
-//                  /Fe:NetSpeedMonitor.exe /link /SUBSYSTEM:WINDOWS ^
-//                  user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib
+//                 /Fe:NetSpeedMonitor.exe /link /SUBSYSTEM:WINDOWS ^
+//                 user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib
 // Build (MinGW): x86_64-w64-mingw32-gcc -O2 -mwindows -DUNICODE -D_UNICODE ^
-//                  main.c icon.o -o NetSpeedMonitor.exe -liphlpapi -lgdi32 ^
-//                  -lshell32 -ladvapi32 -s -static
+//                 main.c icon.o -o NetSpeedMonitor.exe -liphlpapi -lgdi32 ^
+//                 -lshell32 -ladvapi32 -s -static
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0601
@@ -20,16 +35,20 @@
 #include <iphlpapi.h>
 #include <shellapi.h>
 #include <wchar.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
+#define APP_VERSION  L"2.0.1"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
+#define WM_APP_TRAY  (WM_APP + 1)
 #define IDM_AUTOSTART 20001
 #define IDM_TASKMGR    20002
 #define IDM_ABOUT      20003
 #define IDM_EXIT       20004
+#define IDM_FLOAT      20005
 
 typedef struct {
     double down;   // bytes per second
@@ -43,12 +62,40 @@ static UINT   g_dpi            = 96;
 static int    g_winW           = 0;
 static int    g_winH           = 0;
 static BOOL   g_embedded       = FALSE;  // SetParent succeeded
+static BOOL   g_floatMode      = FALSE;  // user-forced floating bar mode
 static int    g_fallbackTries  = 0;
 static COLORREF g_bgColor      = RGB(32, 32, 32);
 static COLORREF g_textColor    = RGB(240, 240, 240);
 static WCHAR  g_text[160]      = L"\x2191 0 B/s  \x2193 0 B/s";
 static int    g_colorTick      = 0;
-static ULONG64 g_lastTick    = 0;
+static int    g_trayTick       = 0;
+static ULONG64 g_lastTick      = 0;
+static BOOL   g_trayAdded      = FALSE;
+static NOTIFYICONDATAW g_nid;
+static HANDLE g_logGuard       = NULL;
+
+// ---------------------------------------------------------------- log
+static void LogLine(const WCHAR* line)
+{
+    WCHAR dir[MAX_PATH * 2];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", dir, MAX_PATH * 2);
+    if (n <= 0 || n >= MAX_PATH) return;
+    wcscat_s(dir, MAX_PATH * 2, L"\\NetSpeedMonitor");
+    CreateDirectoryW(dir, NULL);
+    wcscat_s(dir, MAX_PATH * 2, L"\\log.txt");
+
+    // keep the log small: restart it at 64 KB
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetFileAttributesExW(dir, GetFileExInfoStandard, &fa) &&
+        fa.nFileSizeHigh == 0 && fa.nFileSizeLow > 64 * 1024)
+        DeleteFileW(dir);
+
+    FILE* f = _wfopen(dir, L"a, ccs=UTF-8");
+    if (!f) return;
+    ULONGLONG t = GetTickCount64();
+    fwprintf(f, L"[%llu.%03llu] %s\n", t / 1000, t % 1000, line);
+    fclose(f);
+}
 
 // ---------------------------------------------------------------- utils
 static int DpiVal(int px) { return px * (int)g_dpi / 96; }
@@ -165,8 +212,6 @@ static void UpdateSpeedText(void)
 
 // ------------------------------------------------------------- taskbar
 // Sample the taskbar's rendered background so our solid fill is seamless.
-// Sample point: top strip (2 px from taskbar top edge) a bit left of
-// TrayNotifyWnd - always empty background, above our own window.
 static void SampleTaskbarColor(void)
 {
     RECT rb;
@@ -222,6 +267,71 @@ static void CreateFontForDpi(void)
     if (g_winW <= 0) { g_winW = DpiVal(210); g_winH = DpiVal(24); }
 }
 
+// ------------------------------------------------------------- tray icon
+static void TrayAdd(void)
+{
+    if (g_trayAdded || !g_hwnd) return;
+    ZeroMemory(&g_nid, sizeof(g_nid));
+    g_nid.cbSize           = sizeof(g_nid);
+    g_nid.hWnd             = g_hwnd;
+    g_nid.uID              = 1;
+    g_nid.uFlags           = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    g_nid.uCallbackMessage = WM_APP_TRAY;
+    g_nid.hIcon            = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1));
+    lstrcpynW(g_nid.szTip, APP_NAME L" - loading...", 128);
+    g_trayAdded = Shell_NotifyIconW(NIM_ADD, &g_nid) ? TRUE : FALSE;
+    if (g_trayAdded) {
+        WCHAR b[80];
+        swprintf_s(b, 80, L"tray icon added");
+        LogLine(b);
+    }
+}
+
+static void TrayUpdateTip(void)
+{
+    if (!g_trayAdded) return;
+    WCHAR tip[128];
+    swprintf_s(tip, 128, L"NetSpeedMonitor\n%s", g_text);
+    lstrcpynW(g_nid.szTip, tip, 128);
+    Shell_NotifyIconW(NIM_MODIFY, &g_nid);
+}
+
+static void TrayRemove(void)
+{
+    if (g_trayAdded) {
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+        g_trayAdded = FALSE;
+    }
+}
+
+// ------------------------------------------------------------- mode store
+static void LoadFloatMode(void)
+{
+    HKEY k;
+    g_floatMode = FALSE;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NetSpeedMonitor",
+                      0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS) {
+        WCHAR v[16] = L"";
+        DWORD cb = sizeof(v), type = 0;
+        if (RegQueryValueExW(k, L"Mode", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
+            && type == REG_SZ && lstrcmpiW(v, L"floating") == 0)
+            g_floatMode = TRUE;
+        RegCloseKey(k);
+    }
+}
+
+static void SaveFloatMode(void)
+{
+    HKEY k;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\NetSpeedMonitor",
+                        0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) == ERROR_SUCCESS) {
+        RegSetValueExW(k, L"Mode", 0, REG_SZ,
+                       (const BYTE*)(g_floatMode ? L"floating" : L"embedded"),
+                       (DWORD)((lstrlenW(g_floatMode ? L"floating" : L"embedded") + 1) * sizeof(WCHAR)));
+        RegCloseKey(k);
+    }
+}
+
 // Re-find the taskbar, (re)embed and reposition. Runs every second so
 // explorer restarts, taskbar moves and DPI changes all recover silently.
 static void RecalcAndPosition(void)
@@ -229,32 +339,57 @@ static void RecalcAndPosition(void)
     HWND me = g_hwnd;
     if (!IsWindow(me)) return;
 
-    if (!IsWindow(g_hTaskbar) || GetParent(me) != g_hTaskbar) {
-        g_hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
-        if (!g_hTaskbar) {
+    // ---- embed / unembed according to mode -----------------------------
+    if (g_floatMode) {
+        if (GetParent(me) != NULL) {
+            SetParent(me, NULL);
             g_embedded = FALSE;
-            return;                    // no taskbar yet - stay offscreen
-        }
-        g_fallbackTries = 0;
-        UINT d = DpiOfTaskbar(g_hTaskbar);
-        if (d != g_dpi) { g_dpi = d; CreateFontForDpi(); }
-        if (SetParent(me, g_hTaskbar)) {
-            g_embedded = TRUE;
-            LONG_PTR ex = GetWindowLongPtrW(me, GWL_EXSTYLE);
-            SetWindowLongPtrW(me, GWL_EXSTYLE, ex & ~WS_EX_TOPMOST);
-        } else {
-            g_embedded = FALSE;        // floating topmost fallback
             LONG_PTR ex = GetWindowLongPtrW(me, GWL_EXSTYLE);
             SetWindowLongPtrW(me, GWL_EXSTYLE, ex | WS_EX_TOPMOST);
+            ShowWindow(me, SW_SHOWNOACTIVATE);
+            LogLine(L"mode=floating: unparented, topmost");
+        }
+    } else {
+        if (!IsWindow(g_hTaskbar) || GetParent(me) != g_hTaskbar) {
+            g_hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+            if (!g_hTaskbar) {
+                g_embedded = FALSE;
+                return;                    // no taskbar yet - stay offscreen
+            }
+            g_fallbackTries = 0;
+            UINT d = DpiOfTaskbar(g_hTaskbar);
+            if (d != g_dpi) { g_dpi = d; CreateFontForDpi(); }
+            BOOL ok = SetParent(me, g_hTaskbar) ? TRUE : FALSE;
+            if (ok != g_embedded) {
+                WCHAR b[120];
+                swprintf_s(b, 120, L"SetParent(taskbar=%p) -> %s",
+                           (void*)g_hTaskbar, ok ? L"OK" : L"FAILED");
+                LogLine(b);
+            }
+            g_embedded = ok;
+            LONG_PTR ex = GetWindowLongPtrW(me, GWL_EXSTYLE);
+            SetWindowLongPtrW(me, GWL_EXSTYLE,
+                              ok ? (ex & ~WS_EX_TOPMOST) : (ex | WS_EX_TOPMOST));
+            ShowWindow(me, SW_SHOWNOACTIVATE);   // TrafficMonitor order:
+                                                 // SetParent then show
         }
     }
-    if (!g_hTaskbar) return;
+    if (!g_floatMode && !g_hTaskbar) return;
 
     RECT rb;
     if (!GetWindowRect(g_hTaskbar, &rb)) return;
     int tw = rb.right - rb.left;
     int th = rb.bottom - rb.top;
     if (tw <= 0 || th <= 0) return;
+
+    if (g_floatMode) {                     // floating: sit just above taskbar
+        int x = rb.right - g_winW - DpiVal(8);
+        int y = rb.top - g_winH - DpiVal(2);
+        if (y < 0) y = 0;
+        SetWindowPos(me, NULL, x, y, g_winW, g_winH,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+        return;
+    }
 
     // taskbar-relative notify window position
     int notifyLeft = -1;
@@ -286,12 +421,19 @@ static void RecalcAndPosition(void)
     else                x = tw - g_winW - DpiVal(88) - DpiVal(2);  // clock area guess
     if (x < DpiVal(2)) x = DpiVal(2);
 
-    if (!g_embedded) {                 // floating: convert to screen coords
-        x += rb.left;
-        y += rb.top;
-    }
     SetWindowPos(me, NULL, x, y, g_winW, g_winH,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+
+    // ---- visibility hardening ------------------------------------------
+    // The taskbar's rendered surface is composited above classic HWND
+    // siblings on Windows 11. Re-assert z-order + visibility every second
+    // so the widget can never stay buried.
+    if (!IsWindowVisible(me)) {
+        ShowWindow(me, SW_SHOWNOACTIVATE);
+        LogLine(L"visibility re-asserted (was hidden)");
+    }
+    SetWindowPos(me, HWND_TOP, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 // ---------------------------------------------------------------- paint
@@ -371,6 +513,8 @@ static void ShowContextMenu(HWND hwnd)
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0),
                 IDM_AUTOSTART, L"&Start with Windows");
+    AppendMenuW(m, MF_STRING | (g_floatMode ? MF_CHECKED : 0),
+                IDM_FLOAT, L"&Floating mode (if taskbar widget is not visible)");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"&About");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING, IDM_EXIT, L"E&xit");
@@ -394,7 +538,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp != TIMER_TICK) return 0;
         UpdateSpeedText();
         RecalcAndPosition();
-        if (++g_colorTick >= 5) { g_colorTick = 0; SampleTaskbarColor(); }
+        if (!g_trayAdded && ++g_trayTick >= 5) { g_trayTick = 0; TrayAdd(); }
+        if (++g_colorTick >= 5) {
+            g_colorTick = 0;
+            SampleTaskbarColor();
+            TrayUpdateTip();
+        }
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
     case WM_PAINT:
@@ -402,6 +551,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_ERASEBKGND:
         return 1;
+    case WM_APP_TRAY:                    // tray icon mouse
+        if (lp == WM_RBUTTONUP || lp == WM_LBUTTONUP || lp == WM_CONTEXTMENU)
+            ShowContextMenu(hwnd);
+        else if (lp == WM_LBUTTONDBLCLK)
+            ShellExecuteW(hwnd, L"open", L"taskmgr.exe", NULL, NULL, SW_SHOWNORMAL);
+        return 0;
     case WM_LBUTTONDBLCLK:
         ShellExecuteW(hwnd, L"open", L"taskmgr.exe", NULL, NULL, SW_SHOWNORMAL);
         return 0;
@@ -416,11 +571,23 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_AUTOSTART:
             AutostartToggle(hwnd);
             break;
+        case IDM_FLOAT:
+            g_floatMode = !g_floatMode;
+            SaveFloatMode();
+            {
+                WCHAR b[80];
+                swprintf_s(b, 80, L"user toggled mode -> %s",
+                           g_floatMode ? L"floating" : L"embedded");
+                LogLine(b);
+            }
+            break;
         case IDM_ABOUT:
             MessageBoxW(hwnd,
-                L"NetSpeedMonitor - taskbar network speed display\r\n\r\n"
+                L"NetSpeedMonitor - taskbar network speed display (v" APP_VERSION L")\r\n\r\n"
                 L"Embeds into the Windows 10/11 taskbar (SetParent technique,\r\n"
                 L"as pioneered by TrafficMonitor by zhongyang219).\r\n\r\n"
+                L"Not visible in the taskbar? Right-click the tray icon\r\n"
+                L"(hidden icons ^) and enable 'Floating mode'.\r\n\r\n"
                 L"Double-click: Task Manager  |  Right-click: menu",
                 APP_NAME, MB_ICONINFORMATION);
             break;
@@ -431,6 +598,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_TICK);
+        TrayRemove();
+        LogLine(L"exit");
         PostQuitMessage(0);
         return 0;
     }
@@ -440,13 +609,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 // ---------------------------------------------------------------- main
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
 {
-    (void)prev; (void)cmd;
+    (void)prev; (void)cmd; (void)show;
 
     HANDLE mutex = CreateMutexW(NULL, FALSE, MUTEX_NAME);
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        MessageBoxW(NULL,
-            L"NetSpeedMonitor is already running.\nRight-click its taskbar area to exit.",
-            APP_NAME, MB_ICONINFORMATION);
+        // v2.0.0 could end up invisible; give the user a one-click way to
+        // end the stuck instance before starting this one.
+        int rc = MessageBoxW(NULL,
+            L"NetSpeedMonitor is already running.\r\n\r\n"
+            L"v2.0.1 adds a tray icon: look in the taskbar 'hidden icons'\r\n"
+            L"area (the ^ chevron near the clock).\r\n\r\n"
+            L"If the running copy is an older INVISIBLE version, click OK\r\n"
+            L"to open Task Manager and end 'NetSpeedMonitor.exe', then\r\n"
+            L"start this version again.",
+            APP_NAME, MB_OKCANCEL | MB_ICONINFORMATION);
+        if (rc == IDOK)
+            ShellExecuteW(NULL, L"open", L"taskmgr.exe", NULL, NULL, SW_SHOWNORMAL);
         return 0;
     }
 
@@ -466,14 +644,26 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
 
     g_hwnd = CreateWindowExW(
         WS_EX_TOOLWINDOW, CLASS_NAME, APP_NAME,
-        WS_POPUP, -32000, -32000, 10, 10, NULL, NULL, hInst, NULL);
+        WS_POPUP | WS_CLIPSIBLINGS, -32000, -32000, 10, 10,
+        NULL, NULL, hInst, NULL);
     if (!g_hwnd) return 1;
 
+    LoadFloatMode();
     CreateFontForDpi();
     SampleTaskbarColor();
     UpdateSpeedText();
+
+    {
+        WCHAR b[160];
+        swprintf_s(b, 160, L"start v%s: dpi=%u mode=%s win=%dx%d",
+                   APP_VERSION, g_dpi, g_floatMode ? L"floating" : L"embedded",
+                   g_winW, g_winH);
+        LogLine(b);
+    }
+
     RecalcAndPosition();          // finds taskbar + SetParent + position
     ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+    TrayAdd();                    // always - never invisible-stuck again
 
     MSG m;
     while (GetMessageW(&m, NULL, 0, 0) > 0) {
