@@ -77,3 +77,4 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v2.1.1-x64.exe NetSpeedMeter-2.1.1-x64-Setup.exe --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
