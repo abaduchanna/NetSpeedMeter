@@ -16,6 +16,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0601
+#include <winsock2.h>     // must precede windows.h (netioapi.h needs its types)
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <netioapi.h>
 #include <iphlpapi.h>
