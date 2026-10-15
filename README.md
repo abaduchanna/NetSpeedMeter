@@ -1,5 +1,58 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
+## ✅ NEW in v2.0.0 — NetSpeedMonitor.exe: the speed monitor that WORKS inside the Windows 11 taskbar
+
+The original NetSpeedMonitor cannot ever appear in the Windows 11 taskbar —
+Microsoft removed taskbar *Toolbars* (the deskband mechanism the 2012 DLL used),
+so no patched installer can fix that (details below).
+
+**v2.0.0 fixes this properly.** `src/main.c` is a small, dependency-free Win32
+application that embeds into the taskbar using the same technique as
+[TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) (by zhongyang219):
+
+1. `FindWindow("Shell_TrayWnd")` — get the taskbar window
+2. Create an `WS_EX_TOOLWINDOW` window (no taskbar/alt-tab button)
+3. `SetParent(mine, taskbar)` — live inside the taskbar (this is standard Win32,
+   still fully supported on Windows 11 — no shell extension, no DLL registration)
+4. Position: left of `TrayNotifyWnd` (the clock/tray area), vertically centred
+   on the Start-button height — the exact placement TrafficMonitor uses on Win11
+5. 1-second timer: speed update + reposition + **auto-recover when Explorer
+   restarts** (re-finds the taskbar and re-embeds)
+6. Background colour is sampled from the rendered taskbar (seamless look,
+   adapts to dark/light theme and accent colours), text colour auto-contrast
+
+**Features**
+
+- Live upload/download speed (↑ / ↓), updated every second (64-bit interface
+  counters via `GetIfTable2`, all connected non-loopback adapters)
+- Per-monitor DPI aware (font and size scale with the taskbar)
+- Double-click → Task Manager
+- Right-click menu → **Start with Windows** (HKCU Run toggle, no admin needed),
+  About, Exit
+- Single instance; floating topmost fallback if embedding is refused
+- ~25 KB exe, no installer required, no background service, no telemetry
+
+**Install / run**
+
+1. Download `NetSpeedMonitor.exe` from
+   [Releases](../../releases) (v2.0.0 or later)
+2. Run it — the speed display appears in the taskbar, just left of the clock
+3. Right-click it → *Start with Windows* if you want it at every login
+
+Works on **Windows 10 and Windows 11** (and Windows Server equivalents).
+To remove: right-click → Exit, and delete the exe (plus the
+`HKCU\...\Run\NetSpeedMonitor` value if you enabled autostart).
+
+**Build from source** (see `.github/workflows/windows.yml` for the exact CI):
+
+```
+rc icon.rc
+cl /O2 /W3 /DUNICODE /D_UNICODE main.c icon.res /Fe:NetSpeedMonitor.exe ^
+   /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib
+```
+
+---
+
 **The classic taskbar network speed monitor (NetSpeedMonitor 2.5.4.0) — patched so it
 actually installs on Windows 10 and Windows 11.**
 
@@ -70,7 +123,7 @@ regsvr32    "C:\Program Files\NetSpeedMonitor\nsm.dll"
 Then restart `explorer.exe` (Task Manager → right-click *Windows Explorer* →
 Restart) and right-click the taskbar again.
 
-## Windows 11 — important limitation
+## Windows 11 — why the patched installer alone is not enough
 
 Microsoft removed taskbar **Toolbars** (deskband hosting) when they rewrote the
 taskbar in Windows 11. The patched installer installs and registers everything
@@ -78,13 +131,10 @@ cleanly on Windows 11, but Windows 11 offers **no supported way** to display a
 deskband inside the taskbar anymore. This is a Windows limitation — no patched
 installer can bring the Toolbars menu back.
 
-On Windows 11 you can still:
-
-* run **`nsmc.exe`** (the configuration / traffic statistics tool), and
-* use an actively maintained alternative such as
-  [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor)
-  (open source; shows network speed in a small window that docks next to the
-  taskbar on Windows 11).
+**This is solved by `NetSpeedMonitor.exe` (v2.0.0, see top of this file)** — it
+does not use the removed deskband mechanism at all; it embeds via `SetParent`
+like TrafficMonitor does. On Windows 10 you can use either the classic MSI
+(below) or the new exe; on Windows 11 use the new exe.
 
 ## Portable / manual method (no MSI needed)
 

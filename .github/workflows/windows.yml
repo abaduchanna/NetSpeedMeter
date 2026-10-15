@@ -1,0 +1,39 @@
+name: windows-build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build NetSpeedMonitor.exe
+        shell: cmd
+        working-directory: src
+        run: |
+          rc /nologo icon.rc
+          cl /nologo /O2 /W3 /DUNICODE /D_UNICODE main.c icon.res ^
+            /Fe:NetSpeedMonitor.exe ^
+            /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib
+          dir NetSpeedMonitor.exe
+
+      - name: Smoke test (must stay alive 8s)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "src\NetSpeedMonitor.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { Write-Host "process exited early with code $($p.ExitCode)"; exit 1 }
+          Write-Host "smoke OK - process alive, killing"
+          Stop-Process -Id $p.Id -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NetSpeedMonitor-v2.0.0-x64
+          path: src/NetSpeedMonitor.exe
+          if-no-files-found: error
