@@ -1,1 +1,30 @@
-1 ICON "icon.ico"
+#include <windows.h>
+
+ICON "icon.ico"
+
+1 VERSIONINFO
+FILEVERSION     2,1,1,0
+PRODUCTVERSION  2,1,1,0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName",      "3S Verse"
+      VALUE "FileDescription",  "NetSpeedMeter - taskbar network speed display"
+      VALUE "FileVersion",      "2.1.1"
+      VALUE "InternalName",     "NetSpeedMonitor"
+      VALUE "OriginalFilename", "NetSpeedMonitor.exe"
+      VALUE "ProductName",      "NetSpeedMeter"
+      VALUE "ProductVersion",   "2.1.1"
+      VALUE "LegalCopyright",   "MIT License - 3S Verse"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0409, 0x04B0
+  END
+END
