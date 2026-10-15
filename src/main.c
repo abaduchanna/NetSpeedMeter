@@ -16,13 +16,11 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0601
-#include <winsock2.h>     // must precede windows.h (netioapi.h needs its types)
-#include <ws2tcpip.h>
 #include <windows.h>
-#include <netioapi.h>
 #include <iphlpapi.h>
 #include <shellapi.h>
 #include <wchar.h>
+#include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
@@ -50,9 +48,7 @@ static COLORREF g_bgColor      = RGB(32, 32, 32);
 static COLORREF g_textColor    = RGB(240, 240, 240);
 static WCHAR  g_text[160]      = L"\x2191 0 B/s  \x2193 0 B/s";
 static int    g_colorTick      = 0;
-static ULONG64 g_lastIn        = 0;
-static ULONG64 g_lastOut       = 0;
-static ULONGLONG g_lastTick    = 0;
+static ULONG64 g_lastTick    = 0;
 
 // ---------------------------------------------------------------- utils
 static int DpiVal(int px) { return px * (int)g_dpi / 96; }
@@ -103,44 +99,68 @@ static void FormatRate(double bps, WCHAR* out, size_t cch)
         swprintf_s(out, cch, L"%.0f B/s", bps);
 }
 
-// Sum In/Out octets over all connected non-loopback interfaces (64-bit
-// counters via GetIfTable2, Vista+).
-static void QueryTotals(ULONG64* inTot, ULONG64* outTot)
+// Sum per-interface octet deltas over all connected non-loopback adapters.
+// Uses the classic GetIfTable (32-bit counters) with explicit wrap handling,
+// which avoids the netioapi.h / winsock2.h header dependency maze entirely.
+typedef struct { DWORD idx; ULONG64 in; ULONG64 out; int seen; } IFSTATE;
+static IFSTATE g_if[64];
+
+static ULONG64 WrapDiff(ULONG64 now, ULONG64 prev)
 {
-    PMIB_IFTABLE2 table = NULL;
-    *inTot = 0; *outTot = 0;
-    if (GetIfTable2(&table) == NO_ERROR && table) {
-        ULONG i;
-        for (i = 0; i < table->NumEntries; ++i) {
-            PMIB_IF_ROW2 r = &table->Table[i];
-            if (r->InterfaceOperStatus != IfOperStatusUp) continue;
-            if (r->Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
-            *inTot  += r->InOctets;
-            *outTot += r->OutOctets;
+    if (now >= prev) return now - prev;
+    return 0x100000000ULL - prev + now;      // 32-bit counter wrapped
+}
+
+static void AccumulateDeltas(double* down, double* up)
+{
+    DWORD size = 0;
+    if (GetIfTable(NULL, &size, FALSE) != ERROR_INSUFFICIENT_BUFFER || !size)
+        return;
+    PMIB_IFTABLE t = (PMIB_IFTABLE)malloc(size);
+    if (!t) return;
+    if (GetIfTable(t, &size, FALSE) == NO_ERROR) {
+        DWORD i;
+        for (i = 0; i < t->dwNumEntries; ++i) {
+            PMIB_IFROW r = &t->table[i];
+            if (r->dwOperStatus != MIB_IF_OPER_STATUS_OPERATIONAL) continue;
+            if (r->dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+
+            IFSTATE* st = NULL;
+            int j;
+            for (j = 0; j < 64; ++j) {
+                if (g_if[j].seen && g_if[j].idx == r->dwIndex) { st = &g_if[j]; break; }
+                if (!st && !g_if[j].seen) st = &g_if[j];
+            }
+            if (!st) continue;
+            ULONG64 in = r->dwInOctets, out = r->dwOutOctets;
+            if (st->seen) {
+                *down += (double)WrapDiff(in,  st->in);
+                *up   += (double)WrapDiff(out, st->out);
+            }
+            st->idx = r->dwIndex; st->in = in; st->out = out; st->seen = 1;
         }
-        FreeMibTable(table);
     }
+    free(t);
 }
 
 static void UpdateSpeedText(void)
 {
-    ULONG64 inT = 0, outT = 0;
-    QueryTotals(&inT, &outT);
+    double down = 0, up = 0;
+    AccumulateDeltas(&down, &up);
     ULONGLONG now = GetTickCount64();
 
     if (g_lastTick && now > g_lastTick) {
         double dt = (double)(now - g_lastTick) / 1000.0;
-        double down = (double)(inT  - g_lastIn)  / dt;
-        double up   = (double)(outT - g_lastOut) / dt;
-        if (down < 0) down = 0;      // counter wrap / iface reset
-        if (up   < 0) up   = 0;
-        if (down > 1e12 || up > 1e12) { down = 0; up = 0; }
+        down /= dt;
+        up   /= dt;
+        if (down < 0 || down > 1e12) down = 0;
+        if (up   < 0 || up   > 1e12) up   = 0;
         WCHAR d[40], u[40];
         FormatRate(down, d, 40);
         FormatRate(up,   u, 40);
         swprintf_s(g_text, 160, L"\x2191 %s  \x2193 %s", u, d);
     }
-    g_lastIn = inT; g_lastOut = outT; g_lastTick = now;
+    g_lastTick = now;
 }
 
 // ------------------------------------------------------------- taskbar

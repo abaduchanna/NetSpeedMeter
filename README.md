@@ -24,7 +24,7 @@ application that embeds into the taskbar using the same technique as
 **Features**
 
 - Live upload/download speed (↑ / ↓), updated every second (64-bit interface
-  counters via `GetIfTable2`, all connected non-loopback adapters)
+  counters via `GetIfTable` with wrap-safe deltas, all connected non-loopback adapters)
 - Per-monitor DPI aware (font and size scale with the taskbar)
 - Double-click → Task Manager
 - Right-click menu → **Start with Windows** (HKCU Run toggle, no admin needed),
