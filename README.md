@@ -1,11 +1,41 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.0.1 — visibility hardening: tray icon + never-buried widget
+## ✅ NEW in v2.0.2 — floating mode that is ACTUALLY topmost + one-paste diagnostics
+
+v2.0.1 users reported: **"Floating mode is checked but still nothing shows."**
+Root cause found — two real bugs:
+
+1. **`WS_EX_TOPMOST` via `SetWindowLongPtr()` does not re-band a window.**
+   Windows only honors the topmost layer when it is applied through
+   `SetWindowPos(..., HWND_TOPMOST, ...)`. The v2.0.1 floating bar was moved
+   to the right spot but stayed in the *normal* z-band — hidden behind every
+   open window. v2.0.2 calls `SetWindowPos(HWND_TOPMOST, x, y, w, h)` every
+   second, which positions **and** re-bands in one call. The floating bar now
+   stays on top of everything, just above the taskbar, and it is applied
+   instantly when you toggle the menu item (no 1-second wait).
+2. **A fresh start in floating mode never found the taskbar** — the
+   positioning code depended on a handle that is only resolved in embedded
+   mode, so `GetWindowRect(NULL)` failed every tick and the bar stayed parked
+   offscreen at (−32000,−32000) forever. v2.0.2 resolves `Shell_TrayWnd` in
+   both modes and falls back to the work area if the taskbar rect cannot be
+   measured — the bar can no longer strand offscreen.
+
+Also new in v2.0.2:
+
+- **“Copy diagnostics” menu item** — right-click the tray icon → *Copy
+  diagnostics (bug reports)* → version, mode, window/taskbar rects,
+  visibility and the last 12 log lines land on your clipboard for a
+  one-paste bug report.
+- **60-second heartbeat** in `%LOCALAPPDATA%\NetSpeedMonitor\log.txt` with
+  the full window state, so “invisible” reports can be diagnosed from the
+  log alone.
+
+## v2.0.1 — visibility hardening: tray icon + never-buried widget
 
 Some Windows 11 machines reported v2.0.0 as **"running but invisible"** — the
 process lived, but nothing appeared in the taskbar and there was no tray icon
 either (the old instance could not even be exited normally). v2.0.1 fixes that
-class of problem for good:
+class of problem:
 
 1. **Tray icon is always added** — NetSpeedMonitor now shows up in the tray
    (the `^` hidden-icons chevron near the clock). Right-click it for the menu

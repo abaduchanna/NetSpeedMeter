@@ -2,6 +2,7 @@ name: windows-build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch: {}
 
 jobs:
@@ -34,6 +35,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NetSpeedMonitor-v2.0.1-x64
+          name: NetSpeedMonitor-v2.0.2-x64
           path: src/NetSpeedMonitor.exe
           if-no-files-found: error
