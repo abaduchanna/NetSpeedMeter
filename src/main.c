@@ -147,8 +147,17 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0601
+// MIB_IF_ROW2 / GetIfEntry2 live in netioapi.h, which iphlpapi.h only
+// pulls in when NTDDI_VERSION >= NTDDI_WIN6. Some SDK configurations do
+// not make that true from _WIN32_WINNT alone (v2.6.1 CI hit exactly that,
+// error C2065 'MIB_IF_ROW2'), so pin the NTDDI level and include
+// netioapi.h explicitly - both are no-ops when already configured.
+#ifndef NTDDI_VERSION
+#define NTDDI_VERSION 0x06010000     // NTDDI_WIN7
+#endif
 #include <windows.h>
 #include <iphlpapi.h>
+#include <netioapi.h>
 #include <shellapi.h>
 #include <wchar.h>
 #include <string.h>
