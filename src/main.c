@@ -351,8 +351,7 @@ static void AccumulateDeltas(double* down, double* up)
     for (i = 0; i < (int)ii->NumAdapters; ++i) {
         MIB_IFROW row;
         ZeroMemory(&row, sizeof(row));
-        row.dwIndex = ii->Adapter[i].Index;
-        row.dwSize  = sizeof(row);
+        row.dwIndex = ii->Adapter[i].Index;   // per MSDN: input = interface index
         if (GetIfEntry(&row) != NO_ERROR) continue;
         // defensive only - GetInterfaceInfo never lists the loopback adapter
         if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
