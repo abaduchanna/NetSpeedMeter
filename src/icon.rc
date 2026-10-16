@@ -22,11 +22,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "3S Verse"
       VALUE "FileDescription",  "NetSpeedMeter - taskbar network speed display"
-      VALUE "FileVersion",      "2.5.0"
+      VALUE "FileVersion",      "2.6.0"
       VALUE "InternalName",     "NetSpeedMonitor"
       VALUE "OriginalFilename", "NetSpeedMonitor.exe"
       VALUE "ProductName",      "NetSpeedMeter"
-      VALUE "ProductVersion",   "2.5.0"
+      VALUE "ProductVersion",   "2.6.0"
       VALUE "LegalCopyright",   "MIT License - 3S Verse"
     END
   END

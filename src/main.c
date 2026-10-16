@@ -37,6 +37,28 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.6.0 changes (owner request 2026-10-17: "msi check karo is ka pura system
+// mujhe NSM main chahiye bas abhi wala display same rakhna"):
+//  24. SPEED ENGINE = the ORIGINAL NetSpeedMonitor 2.5.4.0 system, ported
+//      from the x64 MSI payload (core_dll_601_x64, reverse-engineered):
+//      GetInterfaceInfo() enumerates the IP interfaces, every adapter is
+//      sampled with GetIfEntry(MIB_IFROW) and the dwInOctets / dwOutOctets
+//      deltas are summed per ifIndex. The disassembly shows NO dwOperStatus
+//      filter in the sampling loop - disconnected adapters simply have
+//      frozen counters, so summing all IP interfaces never misses traffic.
+//  25. That fixes the "upload/download 0.00 while traffic flows" bug: the
+//      v2.5.0 engine required MIB_IF_OPER_STATUS_OPERATIONAL, but on
+//      Win10/11 the active adapter can report a different status value, so
+//      no interface passed the filter and the sum stayed 0.00 forever. The
+//      old engine also kept 64 fixed state slots that were never freed, so
+//      adapter churn (VPN up/down, WiFi roam, driver reset) could silently
+//      exhaust the table. Both failure modes are gone: no status filter +
+//      growable per-ifIndex state with stale entries expiring after 5
+//      missed samples.
+//  26. DISPLAY UNCHANGED (owner: "abhi wala display same rakhna") - one
+//      row, separate up/down readouts, both unit families, pure black
+//      dark theme: exactly the v2.5.0 presentation.
+//
 // v2.5.0 changes (owner request 2026-10-17: "ek row chaiye sab ek sath nahi"):
 //  21. ONE ROW — the four-row stacked layout is REMOVED. Every units mode
 //      draws a single taskbar-height row. Upload and download stay separate
@@ -115,7 +137,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.5.0"
+#define APP_VERSION  L"2.6.0"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -284,11 +306,23 @@ static void FormatRateBytes(double bps, WCHAR* out, size_t cch)
         swprintf_s(out, cch, L"%.0f B/s", Bps);
 }
 
-// Sum per-interface octet deltas over all connected non-loopback adapters.
-// Uses the classic GetIfTable (32-bit counters) with explicit wrap handling,
-// which avoids the netioapi.h / winsock2.h header dependency maze entirely.
-typedef struct { DWORD idx; ULONG64 in; ULONG64 out; int seen; } IFSTATE;
-static IFSTATE g_if[64];
+// v2.6.0 SPEED ENGINE = ORIGINAL NetSpeedMonitor 2.5.4.0 SYSTEM, ported.
+// Source of truth: netspeedmonitor_2_5_4_0_x64_setup.msi payload
+// core_dll_601_x64, reverse-engineered: the monitor calls
+// GetInterfaceInfo() (0x7A buffer-retry, 0x104 stride IP_ADAPTER_INDEX_MAP
+// loop) and samples EVERY adapter with GetIfEntry(MIB_IFROW), accumulating
+// dwInOctets / dwOutOctets deltas per ifIndex. The disassembly shows NO
+// dwOperStatus filter in the sampling loop - a disconnected adapter just
+// has frozen counters, so summing all IP interfaces never misses traffic.
+//
+// The v2.5.0 engine read 0.00 while traffic flowed because it required
+// MIB_IF_OPER_STATUS_OPERATIONAL (the active Win10/11 adapter can report
+// another status value -> nothing passed the filter), and because its 64
+// fixed state slots were never freed (adapter churn exhausted them).
+// Here: no status filter + growable state + stale slots expire.
+typedef struct { DWORD idx; ULONG64 in; ULONG64 out; int seen; int missed; } IFSTATE;
+static IFSTATE* g_if     = NULL;
+static int       g_ifCap = 0;
 
 static ULONG64 WrapDiff(ULONG64 now, ULONG64 prev)
 {
@@ -298,34 +332,55 @@ static ULONG64 WrapDiff(ULONG64 now, ULONG64 prev)
 
 static void AccumulateDeltas(double* down, double* up)
 {
-    DWORD size = 0;
-    if (GetIfTable(NULL, &size, FALSE) != ERROR_INSUFFICIENT_BUFFER || !size)
+    ULONG size = 0;
+    if (GetInterfaceInfo(NULL, &size) != ERROR_INSUFFICIENT_BUFFER || !size)
         return;
-    PMIB_IFTABLE t = (PMIB_IFTABLE)malloc(size);
-    if (!t) return;
-    if (GetIfTable(t, &size, FALSE) == NO_ERROR) {
-        DWORD i;
-        for (i = 0; i < t->dwNumEntries; ++i) {
-            PMIB_IFROW r = &t->table[i];
-            if (r->dwOperStatus != MIB_IF_OPER_STATUS_OPERATIONAL) continue;
-            if (r->dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+    PIP_INTERFACE_INFO ii = (PIP_INTERFACE_INFO)malloc(size);
+    if (!ii) return;
+    if (GetInterfaceInfo(ii, &size) != NO_ERROR) { free(ii); return; }
 
-            IFSTATE* st = NULL;
-            int j;
-            for (j = 0; j < 64; ++j) {
-                if (g_if[j].seen && g_if[j].idx == r->dwIndex) { st = &g_if[j]; break; }
-                if (!st && !g_if[j].seen) st = &g_if[j];
-            }
-            if (!st) continue;
-            ULONG64 in = r->dwInOctets, out = r->dwOutOctets;
-            if (st->seen) {
-                *down += (double)WrapDiff(in,  st->in);
-                *up   += (double)WrapDiff(out, st->out);
-            }
-            st->idx = r->dwIndex; st->in = in; st->out = out; st->seen = 1;
-        }
+    if (ii->NumAdapters > g_ifCap) {          // grow-only, zero-initialized
+        int cap = ii->NumAdapters + 8;
+        IFSTATE* ni = (IFSTATE*)calloc((size_t)cap, sizeof(IFSTATE));
+        if (!ni) { free(ii); return; }
+        if (g_if) { memcpy(ni, g_if, (size_t)g_ifCap * sizeof(IFSTATE)); free(g_if); }
+        g_if = ni; g_ifCap = cap;
     }
-    free(t);
+
+    int i, j;
+    for (i = 0; i < (int)ii->NumAdapters; ++i) {
+        MIB_IFROW row;
+        ZeroMemory(&row, sizeof(row));
+        row.dwIndex = ii->Adapter[i].Index;
+        row.dwSize  = sizeof(row);
+        if (GetIfEntry(&row) != NO_ERROR) continue;
+        // defensive only - GetInterfaceInfo never lists the loopback adapter
+        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+
+        IFSTATE* st = NULL;
+        for (j = 0; j < g_ifCap; ++j)
+            if (g_if[j].seen && g_if[j].idx == row.dwIndex) { st = &g_if[j]; break; }
+        if (!st) {
+            for (j = 0; j < g_ifCap; ++j)
+                if (!g_if[j].seen) { st = &g_if[j]; break; }
+        }
+        if (!st) continue;
+        ULONG64 in = row.dwInOctets, out = row.dwOutOctets;
+        if (st->seen) {
+            *down += (double)WrapDiff(in,  st->in);
+            *up   += (double)WrapDiff(out, st->out);
+        }
+        st->idx = row.dwIndex; st->in = in; st->out = out;
+        st->seen = 1; st->missed = 0;
+    }
+    free(ii);
+
+    // expire adapters that dropped out (VPN removed, WiFi roamed, driver
+    // reset) so their slots can be reused - the v2.5.0 table could not
+    for (i = 0; i < g_ifCap; ++i) {
+        if (!g_if[i].seen) continue;
+        if (++g_if[i].missed > 5) g_if[i].seen = 0;
+    }
 }
 
 static void UpdateSpeedText(void)

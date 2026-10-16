@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 env:
-  # 2.5.0 on tags v2.5.0, 2.5.0 on main too (single source of truth)
-  APP_VER: "2.5.0"
+  # 2.6.0 on tags v2.6.0, 2.6.0 on main too (single source of truth)
+  APP_VER: "2.6.0"
 
 jobs:
   build:
@@ -76,10 +76,10 @@ jobs:
           - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
           - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
-          ## What's new in v2.5.0
-          - **ONE row** - the stacked four-row layout is gone. Every units mode draws a single taskbar-height row; upload and download stay separate readouts (own arrow, own color), never attached, never stacked.
-          - **Units menu: both families, one row each** - BYTES (capital B): Auto (B/s, KB/s, MB/s), KB/s, MB/s - and BITS (lowercase b): Auto (b/s, Kb/s, Mb/s), Kb/s, Mb/s. 8 bits = 1 byte (KB/s = Kb/s / 8, MB/s = Mb/s / 8). Default = BYTES Auto.
-          - **Black background** - Dark theme now uses pure black and is the default (Auto match-taskbar and Light remain available).
+          ## What's new in v2.6.0
+          - **Original NetSpeedMonitor 2.5.4.0 measurement system, ported** - the speed engine is now the exact system reverse-engineered from the classic x64 MSI: GetInterfaceInfo enumeration + per-adapter GetIfEntry octet deltas (In/Out), summed over all IP interfaces, no status filter.
+          - **Fixes the 0.00 speed bug** - the previous engine required the adapter to report OPERATIONAL, which the active Win10/11 adapter can skip, leaving the readout at 0.00 while traffic flowed. The original system has no such filter, so live traffic is always counted (upload included).
+          - **Display unchanged** - one row, separate up/down readouts, both unit families (BYTES capital B / BITS lowercase b), pure black dark theme: exactly the v2.5.0 presentation.
 
           Right-click the tray icon (or the widget) for Units / Theme / Colored speeds / Floating mode / diagnostics." \
             NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \

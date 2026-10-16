@@ -1,6 +1,33 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.5.0 — ONE row, black background
+## ✅ NEW in v2.6.0 — the original 2.5.4.0 measurement engine, display unchanged
+
+1. **Original NetSpeedMonitor 2.5.4.0 speed system, ported** — the engine
+   inside this widget is now the same system that powers the classic
+   NetSpeedMonitor 2.5.4.0 (reverse-engineered from its x64 MSI payload):
+   `GetInterfaceInfo()` enumerates the IP interfaces, every adapter is
+   sampled each second with `GetIfEntry()` and the per-adapter
+   `dwInOctets` / `dwOutOctets` deltas are summed over all IP interfaces.
+   The original applies **no operational-status filter** in its sampling
+   loop — a disconnected adapter simply has frozen counters — so live
+   traffic is always counted.
+2. **Fixes the 0.00 speed bug (upload AND download)** — the previous
+   engine required the adapter to report `MIB_IF_OPER_STATUS_OPERATIONAL`;
+   on Windows 10/11 the active adapter can report a different status
+   value, so no interface passed the filter and the widget stayed at
+   `0.00` forever while traffic was flowing. The ported system has no
+   such filter, so upload traffic is counted the moment it moves.
+   A second latent bug is also gone: the old engine kept 64 fixed
+   per-adapter slots that were never freed, so adapter churn (VPN
+   connect/disconnect, WiFi roaming, driver resets) could silently
+   exhaust the table — the new engine grows on demand and expires stale
+   adapters after 5 missed samples.
+3. **Display UNCHANGED** — exactly the v2.5.0 presentation: ONE row,
+   separate `↑` / `↓` readouts (upload red, download green), the BYTES
+   (capital B) and BITS (lowercase b) unit families in the Units menu,
+   and the pure-black Dark theme as default.
+
+## v2.5.0 (superseded by v2.6.0) — ONE row, black background
 
 1. **ONE row** — the v2.4.0 four-row stacked layout is REMOVED (owner:
    "ek row chaiye sab ek sath nahi"). Every units mode now draws a single
