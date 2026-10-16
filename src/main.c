@@ -37,6 +37,18 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.2.0 features/fixes (owner requests 2026-10-16):
+//  13. UNITS "Both (KB/s + MB/s)" mode - each direction shows BOTH units,
+//      e.g. "v 1582.4 KB/s (1.54 MB/s)". "Both" is now the DEFAULT unit
+//      mode for all installs (owner: "Mb/s Kb/s dono dal do"), and a saved
+//      "auto" setting migrates to "both" on first start.
+//  14. THEME toggle fix - the Auto theme sampler passed SCREEN coordinates
+//      to the taskbar CLIENT-area DC (GetPixel went out of bounds and
+//      returned CLR_INVALID on every call, so Auto never matched the real
+//      taskbar color). Sampling now uses proper client coordinates with a
+//      composited-screen fallback, and Dark/Light switches repaint
+//      immediately instead of waiting for the next timer tick.
+//
 // v2.1.0 features (owner requests):
 //  10. UNITS menu: Auto (B/s .. GB/s scaling), KB/s, MB/s - persisted.
 //  11. THEME menu: Auto (matches taskbar via pixel sampling), Dark, Light
@@ -71,7 +83,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.1.1"
+#define APP_VERSION  L"2.2.0"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -85,6 +97,7 @@
 #define IDM_UNITS_AUTO 20010
 #define IDM_UNITS_KB   20011
 #define IDM_UNITS_MB   20012
+#define IDM_UNITS_BOTH 20013
 #define IDM_THEME_AUTO 20020
 #define IDM_THEME_DARK 20021
 #define IDM_THEME_LITE 20022
@@ -181,10 +194,16 @@ static UINT DpiOfTaskbar(HWND taskbar)
 }
 
 // ---------------------------------------------------------------- speed
-// g_units: 0 = auto-scale (B/s .. GB/s), 1 = always KB/s, 2 = always MB/s
+// g_units: 0 = auto-scale (B/s .. GB/s), 1 = always KB/s, 2 = always MB/s,
+//          3 = BOTH units (KB/s first, MB/s in parentheses)
 static void FormatRate(double bps, WCHAR* out, size_t cch)
 {
     if (bps < 0) bps = 0;
+    if (g_units == 3) {
+        swprintf_s(out, cch, L"%.1f KB/s (%.2f MB/s)",
+                   bps / 1024.0, bps / (1024.0 * 1024.0));
+        return;
+    }
     if (g_units == 1) {
         swprintf_s(out, cch, L"%.1f KB/s", bps / 1024.0);
         return;
@@ -273,21 +292,45 @@ static void UpdateSpeedText(void)
 // Sample the taskbar's rendered background so our solid fill is seamless
 // (theme = Auto only). Sets the background color; text/arrow colors are
 // derived from background luminance in DeriveArrowColors().
+// v2.2.0: coordinates are CLIENT-relative (the v2.1.x code passed screen
+// coordinates into the client DC, so GetPixel always failed and Auto kept
+// the startup color forever). Falls back to sampling the composited screen
+// when the taskbar DC returns nothing (XAML-composited taskbars).
 static void SampleTaskbarColor(void)
 {
     RECT rb;
     if (!g_hTaskbar || !GetWindowRect(g_hTaskbar, &rb)) return;
-    int sx = rb.right - DpiVal(40);
-    HWND hN = FindWindowExW(g_hTaskbar, NULL, L"TrayNotifyWnd", NULL);
-    if (hN) {
-        RECT rn;
-        if (GetWindowRect(hN, &rn) && rn.left - DpiVal(30) > rb.left)
-            sx = rn.left - DpiVal(30);
-    }
-    HDC dc = GetDC(g_hTaskbar);
-    if (dc) {
-        COLORREF c = GetPixel(dc, sx, rb.top + 2);
-        ReleaseDC(g_hTaskbar, dc);
+    {
+        int sx = 0, sy = 2;
+        COLORREF c = CLR_INVALID;
+        HWND hN = FindWindowExW(g_hTaskbar, NULL, L"TrayNotifyWnd", NULL);
+        if (hN) {
+            RECT rn;
+            POINT tl;
+            if (GetWindowRect(hN, &rn)) {
+                tl.x = rn.left; tl.y = rn.top;
+                ScreenToClient(g_hTaskbar, &tl);
+                sx = tl.x - DpiVal(30);
+                if (sx < 0) sx = 0;
+            }
+        } else {
+            RECT rc;
+            if (GetClientRect(g_hTaskbar, &rc)) sx = rc.right - DpiVal(40);
+        }
+        {
+            HDC dc = GetDC(g_hTaskbar);
+            if (dc) {
+                c = GetPixel(dc, sx, sy);
+                ReleaseDC(g_hTaskbar, dc);
+            }
+        }
+        if (c == CLR_INVALID) {
+            HDC sdc = GetDC(NULL);
+            if (sdc) {
+                c = GetPixel(sdc, rb.right - DpiVal(120), rb.top + DpiVal(8));
+                ReleaseDC(NULL, sdc);
+            }
+        }
         if (c != CLR_INVALID) g_bgColor = c;
     }
 }
@@ -337,7 +380,11 @@ static void CreateFontForDpi(void)
         HGDIOBJ old = SelectObject(dc, g_font);
         SIZE sz;
         WCHAR sample[160];
-        swprintf_s(sample, 160, L"\x2191 888.88 MB/s  \x2193 888.88 MB/s");
+        if (g_units == 3)
+            swprintf_s(sample, 160,
+                L"\x2191 8888.8 KB/s (888.88 MB/s)  \x2193 8888.8 KB/s (888.88 MB/s)");
+        else
+            swprintf_s(sample, 160, L"\x2191 888.88 MB/s  \x2193 888.88 MB/s");
         if (GetTextExtentPoint32W(dc, sample, (int)wcslen(sample), &sz)) {
             g_winW = sz.cx + DpiVal(14);
             g_winH = sz.cy + DpiVal(4);
@@ -391,6 +438,7 @@ static void LoadSettings(void)
 {
     HKEY k;
     g_floatMode = FALSE;
+    g_units = 3;      // v2.2.0: "Both (KB/s + MB/s)" is the default (owner rule)
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NetSpeedMonitor",
                       0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS) {
         WCHAR v[16] = L"";
@@ -403,7 +451,8 @@ static void LoadSettings(void)
             && type == REG_SZ) {
             if (lstrcmpiW(v, L"kb") == 0) g_units = 1;
             else if (lstrcmpiW(v, L"mb") == 0) g_units = 2;
-            else g_units = 0;
+            else if (lstrcmpiW(v, L"both") == 0) g_units = 3;
+            else g_units = 3;   // "auto" and unknown values migrate to Both (v2.2.0)
         }
         cb = sizeof(v);
         if (RegQueryValueExW(k, L"Theme", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
@@ -428,7 +477,9 @@ static void SaveSettings(void)
         const WCHAR* mode = g_floatMode ? L"floating" : L"embedded";
         RegSetValueExW(k, L"Mode", 0, REG_SZ, (const BYTE*)mode,
                        (DWORD)((lstrlenW(mode) + 1) * sizeof(WCHAR)));
-        const WCHAR* units = (g_units == 1) ? L"kb" : (g_units == 2) ? L"mb" : L"auto";
+        const WCHAR* units = (g_units == 1) ? L"kb" :
+                             (g_units == 2) ? L"mb" :
+                             (g_units == 3) ? L"both" : L"auto";
         RegSetValueExW(k, L"Units", 0, REG_SZ, (const BYTE*)units,
                        (DWORD)((lstrlenW(units) + 1) * sizeof(WCHAR)));
         const WCHAR* theme = (g_theme == 1) ? L"dark" : (g_theme == 2) ? L"light" : L"auto";
@@ -724,9 +775,10 @@ static void ShowContextMenu(HWND hwnd)
     if (!m) return;
 
     HMENU mu = CreatePopupMenu();          // Units
+    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_BOTH, L"Both (KB/s + MB/s)");
     AppendMenuW(mu, MF_STRING | (g_units == 0 ? MF_CHECKED : 0), IDM_UNITS_AUTO, L"Auto");
-    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"KB/s");
-    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"MB/s");
+    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"KB/s only");
+    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"MB/s only");
 
     HMENU mt = CreatePopupMenu();          // Theme
     AppendMenuW(mt, MF_STRING | (g_theme == 0 ? MF_CHECKED : 0), IDM_THEME_AUTO, L"Auto (match taskbar)");
@@ -830,10 +882,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_UNITS_AUTO:
         case IDM_UNITS_KB:
         case IDM_UNITS_MB:
+        case IDM_UNITS_BOTH:
             g_units = (LOWORD(wp) == IDM_UNITS_KB) ? 1 :
-                      (LOWORD(wp) == IDM_UNITS_MB) ? 2 : 0;
+                      (LOWORD(wp) == IDM_UNITS_MB) ? 2 :
+                      (LOWORD(wp) == IDM_UNITS_BOTH) ? 3 : 0;
             SaveSettings();
+            CreateFontForDpi();      // re-measure the window for the new format
             UpdateSpeedText();
+            RecalcAndPosition();
             InvalidateRect(hwnd, NULL, FALSE);
             break;
         case IDM_THEME_AUTO:
@@ -843,7 +899,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                       (LOWORD(wp) == IDM_THEME_LITE) ? 2 : 0;
             ApplyTheme();
             SaveSettings();
-            InvalidateRect(hwnd, NULL, FALSE);
+            // v2.2.0: repaint IMMEDIATELY (the v2.1.x toggle only posted an
+            // invalidate, so the switch could look delayed or half-applied)
+            RedrawWindow(hwnd, NULL, NULL,
+                         RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW | RDW_ALLCHILDREN);
             break;
         case IDM_COLOR:
             g_colorSpeeds = !g_colorSpeeds;
@@ -862,8 +921,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 L"NetSpeedMonitor - taskbar network speed display (v" APP_VERSION L")\r\n\r\n"
                 L"Embeds into the Windows 10/11 taskbar (SetParent technique,\r\n"
                 L"as pioneered by TrafficMonitor by zhongyang219).\r\n\r\n"
-                L"Menu: Units (Auto/KB/s/MB/s), Theme (Auto/Dark/Light),\r\n"
-                L"colored speeds (up red, down green).\r\n\r\n"
+                L"Menu: Units (Both KB/s + MB/s / Auto / KB/s / MB/s),\r\n"
+                L"Theme (Auto/Dark/Light), colored speeds (up red, down green).\r\n\r\n"
                 L"Not visible in the taskbar? Right-click the tray icon\r\n"
                 L"(hidden icons ^) and enable 'Floating mode' (truly topmost).\r\n"
                 L"Still stuck? Use 'Copy diagnostics'.\r\n\r\n"
