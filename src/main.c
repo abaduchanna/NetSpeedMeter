@@ -37,14 +37,16 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
-// v2.5.0 changes (owner request 2026-10-17: "mujhe MB/s separate aur KB/s
-// separate chahiye attached wala nahi hona chahiye ... aur bg black"):
-//  21. PURE BLACK background: the Dark theme now paints RGB(0,0,0) (was
-//      RGB(24,24,28) dark gray) and "Auto (match taskbar)" is retired — any
-//      saved "auto" migrates to Dark, so the widget background is always
-//      true black unless the user explicitly picks Light.
-//  22. Theme menu reduced to "Dark (black background)" / "Light"; the
-//      startup default is Dark = black.
+// v2.5.0 changes (owner request 2026-10-17: "ek row chaiye sab ek sath nahi"):
+//  21. ONE ROW — the four-row stacked layout is REMOVED. Every units mode
+//      draws a single taskbar-height row. Upload and download stay separate
+//      readouts (own arrows, own colors) and are never attached into one
+//      value and never stacked into multiple rows.
+//  22. Units menu now has BOTH families, one row each — BYTES (capital B):
+//      Auto (B/s..GB/s), KB/s, MB/s — and BITS (lowercase b): Auto
+//      (b/s..Gb/s), Kb/s, Mb/s. 8 bits = 1 byte; KB/s = Kb/s / 8.
+//  23. Default mode = BYTES Auto; default theme = Dark with a pure BLACK
+//      background (owner: "bg black").
 //
 // v2.4.0 changes (owner request 2026-10-17: "Kb/s aur Mb/s alag higa ... sath
 // nahi hoga. aur MB/s aur Mb/s main farak hai"):
@@ -127,7 +129,9 @@
 #define IDM_UNITS_AUTO 20010
 #define IDM_UNITS_KB   20011
 #define IDM_UNITS_MB   20012
-#define IDM_UNITS_BOTH 20013
+#define IDM_UNITS_ABITS 20014
+#define IDM_UNITS_KBB  20015
+#define IDM_UNITS_MBB  20016
 #define IDM_THEME_AUTO 20020
 #define IDM_THEME_DARK 20021
 #define IDM_THEME_LITE 20022
@@ -147,28 +151,15 @@ static int    g_winH           = 0;
 static BOOL   g_embedded       = FALSE;  // SetParent succeeded
 static BOOL   g_floatMode      = FALSE;  // user-forced floating bar mode
 static int    g_fallbackTries  = 0;
-static COLORREF g_bgColor      = RGB(0, 0, 0);     // v2.5.0: pure black
+static COLORREF g_bgColor      = RGB(32, 32, 32);
 static COLORREF g_textColor    = RGB(240, 240, 240);
 static COLORREF g_upColor      = RGB(255, 112, 100);   // upload RED
 static COLORREF g_downColor    = RGB(110, 231, 133);   // download GREEN
 static WCHAR  g_text[160]      = L"\x2191 0 b/s  \x2193 0 b/s";
 static WCHAR  g_upText[80]     = L"\x2191 0 b/s";
 static WCHAR  g_downText[80]   = L"\x2193 0 b/s";
-static WCHAR  g_lineMb[80]     = L"\x2191 0.00 Mb/s  \x2193 0.00 Mb/s";
-static WCHAR  g_lineKb[80]     = L"\x2191 0.0 Kb/s  \x2193 0.0 Kb/s";
-static WCHAR  g_lineUpMb[40]   = L"\x2191 0.00 Mb/s";
-static WCHAR  g_lineDnMb[40]   = L"\x2193 0.00 Mb/s";
-static WCHAR  g_lineUpKb[40]   = L"\x2191 0.0 Kb/s";
-static WCHAR  g_lineDnKb[40]   = L"\x2193 0.0 Kb/s";
-// v2.4.0: BYTES family — separate rows, capital B (owner: "MB/s aur Mb/s main farak hai")
-static WCHAR  g_lineMB[80]     = L"\x2191 0.00 MB/s  \x2193 0.00 MB/s";
-static WCHAR  g_lineKB[80]     = L"\x2191 0.0 KB/s  \x2193 0.0 KB/s";
-static WCHAR  g_lineUpMB[40]   = L"\x2191 0.00 MB/s";
-static WCHAR  g_lineDnMB[40]   = L"\x2193 0.00 MB/s";
-static WCHAR  g_lineUpKB[40]   = L"\x2191 0.0 KB/s";
-static WCHAR  g_lineDnKB[40]   = L"\x2193 0.0 KB/s";
-static int    g_units          = 0;   // 0=auto  1=Kb/s  2=Mb/s  3=separate lines
-static int    g_theme          = 1;   // 1=dark (black bg, default) 2=light; legacy 0=auto -> dark
+static int    g_units          = 0;   // v2.5.0: 0=bytes auto 1=KB/s 2=MB/s 3=bits auto 4=Kb/s 5=Mb/s (ONE row)
+static int    g_theme          = 1;   // v2.5.0: default dark (pure black bg); 0=auto 2=light
 static BOOL   g_colorSpeeds    = TRUE; // up red / down green
 static int    g_colorTick      = 0;
 static int    g_trayTick       = 0;
@@ -237,19 +228,25 @@ static UINT DpiOfTaskbar(HWND taskbar)
 }
 
 // ---------------------------------------------------------------- speed
-// g_units: 0 = auto-scale (b/s .. Gb/s), 1 = always Kb/s, 2 = always Mb/s,
-//          3 = SEPARATE lines (owner rule 2026-10-17: the old mashed
-//          "1582.4 KB/s (1.54 MB/s)" string is REMOVED; Kb/s and Mb/s are
-//          shown as two separate lines instead). Units use a SMALL b
-//          everywhere (Kb/s, Mb/s) — owner: "b small hai capital nahi".
-static void FormatRate(double bps, WCHAR* out, size_t cch)
+// g_units — every mode draws ONE row (owner rule 2026-10-17: "ek row
+// chahiye sab ek sath nahi"). Up and down stay separate readouts (own
+// arrows, own colors) — never attached into one value, never stacked:
+//   0 = BYTES auto-scale (B/s .. GB/s, capital B)  [default]
+//   1 = always KB/s (bytes, capital B)
+//   2 = always MB/s (bytes, capital B)
+//   3 = BITS auto-scale (b/s .. Gb/s, lowercase b)
+//   4 = always Kb/s (bits, lowercase b)
+//   5 = always Mb/s (bits, lowercase b)
+// 8 bits = 1 byte: KB/s = Kb/s / 8, MB/s = Mb/s / 8.
+// BITS family (lowercase b): modes 3 (auto), 4 (Kb/s), 5 (Mb/s).
+static void FormatRateBits(double bps, WCHAR* out, size_t cch)
 {
     if (bps < 0) bps = 0;
-    if (g_units == 1) {
+    if (g_units == 4) {
         swprintf_s(out, cch, L"%.1f Kb/s", bps / 1024.0);
         return;
     }
-    if (g_units == 2) {
+    if (g_units == 5) {
         swprintf_s(out, cch, L"%.2f Mb/s", bps / (1024.0 * 1024.0));
         return;
     }
@@ -261,6 +258,30 @@ static void FormatRate(double bps, WCHAR* out, size_t cch)
         swprintf_s(out, cch, L"%.1f Kb/s", bps / 1024.0);
     else
         swprintf_s(out, cch, L"%.0f b/s", bps);
+}
+
+// BYTES family (capital B): modes 0 (auto), 1 (KB/s), 2 (MB/s).
+// 8 bits = 1 byte, so the byte rate is the bit rate divided by 8.
+static void FormatRateBytes(double bps, WCHAR* out, size_t cch)
+{
+    if (bps < 0) bps = 0;
+    double Bps = bps / 8.0;
+    if (g_units == 1) {
+        swprintf_s(out, cch, L"%.1f KB/s", Bps / 1024.0);
+        return;
+    }
+    if (g_units == 2) {
+        swprintf_s(out, cch, L"%.2f MB/s", Bps / (1024.0 * 1024.0));
+        return;
+    }
+    if (Bps >= 1024.0 * 1024.0 * 1024.0)
+        swprintf_s(out, cch, L"%.2f GB/s", Bps / (1024.0 * 1024.0 * 1024.0));
+    else if (Bps >= 1024.0 * 1024.0)
+        swprintf_s(out, cch, L"%.1f MB/s", Bps / (1024.0 * 1024.0));
+    else if (Bps >= 1024.0)
+        swprintf_s(out, cch, L"%.1f KB/s", Bps / 1024.0);
+    else
+        swprintf_s(out, cch, L"%.0f B/s", Bps);
 }
 
 // Sum per-interface octet deltas over all connected non-loopback adapters.
@@ -319,41 +340,69 @@ static void UpdateSpeedText(void)
         up   /= dt;
         if (down < 0 || down > 1e12) down = 0;
         if (up   < 0 || up   > 1e12) up   = 0;
-        if (g_units == 3) {
-            // v2.4.0 FOUR SEPARATE rows — nothing is ever combined into one
-            // string: row1 Mb/s, row2 Kb/s (bits, lowercase b), row3 MB/s,
-            // row4 KB/s (bytes, capital B). Owner rule, final form.
-            swprintf_s(g_lineUpMb, 40, L"\x2191 %.2f Mb/s", up   / (1024.0 * 1024.0));
-            swprintf_s(g_lineDnMb, 40, L"\x2193 %.2f Mb/s", down / (1024.0 * 1024.0));
-            swprintf_s(g_lineMb,   80, L"%s  %s", g_lineUpMb, g_lineDnMb);
-            swprintf_s(g_lineUpKb, 40, L"\x2191 %.1f Kb/s", up   / 1024.0);
-            swprintf_s(g_lineDnKb, 40, L"\x2193 %.1f Kb/s", down / 1024.0);
-            swprintf_s(g_lineKb,   80, L"%s  %s", g_lineUpKb, g_lineDnKb);
-            swprintf_s(g_lineUpMB, 40, L"\x2191 %.2f MB/s", up   / (8.0 * 1024.0 * 1024.0));
-            swprintf_s(g_lineDnMB, 40, L"\x2193 %.2f MB/s", down / (8.0 * 1024.0 * 1024.0));
-            swprintf_s(g_lineMB,   80, L"%s  %s", g_lineUpMB, g_lineDnMB);
-            swprintf_s(g_lineUpKB, 40, L"\x2191 %.1f KB/s", up   / (8.0 * 1024.0));
-            swprintf_s(g_lineDnKB, 40, L"\x2193 %.1f KB/s", down / (8.0 * 1024.0));
-            swprintf_s(g_lineKB,   80, L"%s  %s", g_lineUpKB, g_lineDnKB);
-            // tooltip shows the bits row only — the on-widget rows stay the
-            // single source of truth and are never merged
-            lstrcpynW(g_text, g_lineMb, 160);
-        } else {
-            WCHAR d[40], u[40];
-            FormatRate(down, d, 40);
-            FormatRate(up,   u, 40);
-            swprintf_s(g_upText,   80, L"\x2191 %s", u);
-            swprintf_s(g_downText, 80, L"\x2193 %s", d);
-            swprintf_s(g_text,    160, L"%s  %s", g_upText, g_downText);
+        // v2.5.0: ONE row, always. Up and down are separate readouts in the
+        // selected unit family — nothing is stacked, nothing is attached.
+        WCHAR d[40], u[40];
+        if (g_units <= 2) {          // BYTES family (capital B)
+            FormatRateBytes(down, d, 40);
+            FormatRateBytes(up,   u, 40);
+        } else {                     // BITS family (lowercase b)
+            FormatRateBits(down, d, 40);
+            FormatRateBits(up,   u, 40);
         }
+        swprintf_s(g_upText,   80, L"\x2191 %s", u);
+        swprintf_s(g_downText, 80, L"\x2193 %s", d);
+        swprintf_s(g_text,    160, L"%s  %s", g_upText, g_downText);
     }
     g_lastTick = now;
 }
 
-// ------------------------------------------------------ theme colors
-// v2.5.0: taskbar pixel-sampling was REMOVED — the widget background is
-// pure black (Dark, default) or warm white (Light). Text and arrow colors
-// are derived from the background luminance in DeriveArrowColors().
+// ------------------------------------------------------------- taskbar
+// Sample the taskbar's rendered background so our solid fill is seamless
+// (theme = Auto only). Sets the background color; text/arrow colors are
+// derived from background luminance in DeriveArrowColors().
+// v2.2.0: coordinates are CLIENT-relative (the v2.1.x code passed screen
+// coordinates into the client DC, so GetPixel always failed and Auto kept
+// the startup color forever). Falls back to sampling the composited screen
+// when the taskbar DC returns nothing (XAML-composited taskbars).
+static void SampleTaskbarColor(void)
+{
+    RECT rb;
+    if (!g_hTaskbar || !GetWindowRect(g_hTaskbar, &rb)) return;
+    {
+        int sx = 0, sy = 2;
+        COLORREF c = CLR_INVALID;
+        HWND hN = FindWindowExW(g_hTaskbar, NULL, L"TrayNotifyWnd", NULL);
+        if (hN) {
+            RECT rn;
+            POINT tl;
+            if (GetWindowRect(hN, &rn)) {
+                tl.x = rn.left; tl.y = rn.top;
+                ScreenToClient(g_hTaskbar, &tl);
+                sx = tl.x - DpiVal(30);
+                if (sx < 0) sx = 0;
+            }
+        } else {
+            RECT rc;
+            if (GetClientRect(g_hTaskbar, &rc)) sx = rc.right - DpiVal(40);
+        }
+        {
+            HDC dc = GetDC(g_hTaskbar);
+            if (dc) {
+                c = GetPixel(dc, sx, sy);
+                ReleaseDC(g_hTaskbar, dc);
+            }
+        }
+        if (c == CLR_INVALID) {
+            HDC sdc = GetDC(NULL);
+            if (sdc) {
+                c = GetPixel(sdc, rb.right - DpiVal(120), rb.top + DpiVal(8));
+                ReleaseDC(NULL, sdc);
+            }
+        }
+        if (c != CLR_INVALID) g_bgColor = c;
+    }
+}
 
 // Text + arrow colors from the background luminance. Dark backgrounds get
 // bright arrows, light backgrounds get dark arrows (always readable).
@@ -372,13 +421,12 @@ static void DeriveArrowColors(void)
     }
 }
 
-// Apply the selected theme. v2.5.0: g_theme 1=dark paints PURE BLACK
-// (owner: "aur bg black"), 2=light paints warm white; legacy 0=auto is
-// treated as dark so every saved setting lands on the black background.
+// Apply the selected theme (g_theme: 0=auto 1=dark 2=light).
 static void ApplyTheme(void)
 {
-    if (g_theme == 2)      g_bgColor = RGB(243, 243, 243);
-    else                   g_bgColor = RGB(0, 0, 0);   // v2.5.0: pure black
+    if (g_theme == 1)      g_bgColor = RGB(0, 0, 0);      // v2.5.0: pure black (owner: "bg black")
+    else if (g_theme == 2) g_bgColor = RGB(243, 243, 243);
+    else                   SampleTaskbarColor();
     DeriveArrowColors();
 }
 
@@ -391,10 +439,7 @@ static void CreateFontForDpi(void)
 {
     DestroyFont();
     int hpt = -MulDiv(9, (int)g_dpi, 72);          // Segoe UI 9 pt
-    // v2.4.0: the 4-row mode needs a compact font so all four rows fit
-    // inside the taskbar height (rows are ~taskbar_h/4)
-    int hpt4 = -MulDiv(7, (int)g_dpi, 72);         // Segoe UI 7 pt rows
-    g_font = CreateFontW(g_units == 3 ? hpt4 : hpt, 0, 0, 0, FW_NORMAL,
+    g_font = CreateFontW(hpt, 0, 0, 0, FW_NORMAL,
                          FALSE, FALSE, FALSE,
                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -405,19 +450,11 @@ static void CreateFontForDpi(void)
         HGDIOBJ old = SelectObject(dc, g_font);
         SIZE sz;
         WCHAR sample[160];
-        if (g_units == 3)
-            // 4-row mode: window is tall enough for FOUR stacked rows; the
-            // Kb/s row is the widest of the four
-            swprintf_s(sample, 160,
-                L"\x2191 8888.8 Kb/s  \x2193 8888.8 Kb/s");
-        else
-            swprintf_s(sample, 160, L"\x2191 888.88 Mb/s  \x2193 888.88 Mb/s");
+        swprintf_s(sample, 160,
+            L"\x2191 8888.88 MB/s  \x2193 8888.88 MB/s");
         if (GetTextExtentPoint32W(dc, sample, (int)wcslen(sample), &sz)) {
             g_winW = sz.cx + DpiVal(14);
-            if (g_units == 3)
-                g_winH = sz.cy * 4 + DpiVal(8);      // four stacked rows
-            else
-                g_winH = sz.cy + DpiVal(4);
+            g_winH = sz.cy + DpiVal(4);              // ONE row, taskbar height
             if (g_winH < DpiVal(20)) g_winH = DpiVal(20);
         }
         SelectObject(dc, old);
@@ -468,7 +505,8 @@ static void LoadSettings(void)
 {
     HKEY k;
     g_floatMode = FALSE;
-    g_units = 3;      // v2.2.0: "Both (KB/s + MB/s)" is the default (owner rule)
+    g_units = 0;      // v2.5.0: BYTES Auto, one row (owner rule)
+    g_theme = 1;      // v2.5.0: Dark = pure black background (owner: "bg black")
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\NetSpeedMonitor",
                       0, KEY_QUERY_VALUE, &k) == ERROR_SUCCESS) {
         WCHAR v[16] = L"";
@@ -479,15 +517,20 @@ static void LoadSettings(void)
         cb = sizeof(v);
         if (RegQueryValueExW(k, L"Units", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
             && type == REG_SZ) {
-            if (lstrcmpiW(v, L"kb") == 0) g_units = 1;
-            else if (lstrcmpiW(v, L"mb") == 0) g_units = 2;
-            else g_units = 3;   // "sep", legacy "both", "auto", unknown -> separate lines
+            // v2.5.0: bytes modes are the default; bits modes opt-in.
+            if      (lstrcmpiW(v, L"kb")   == 0) g_units = 1;
+            else if (lstrcmpiW(v, L"mb")   == 0) g_units = 2;
+            else if (lstrcmpiW(v, L"bits") == 0) g_units = 3;
+            else if (lstrcmpiW(v, L"kbb")  == 0) g_units = 4;
+            else if (lstrcmpiW(v, L"mbb")  == 0) g_units = 5;
+            else g_units = 0;   // "auto", legacy "sep"/"both", unknown -> BYTES Auto
         }
         cb = sizeof(v);
         if (RegQueryValueExW(k, L"Theme", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
             && type == REG_SZ) {
-            if (lstrcmpiW(v, L"light") == 0) g_theme = 2;
-            else g_theme = 1;   // v2.5.0: "dark" and legacy "auto" -> black
+            if (lstrcmpiW(v, L"dark") == 0) g_theme = 1;
+            else if (lstrcmpiW(v, L"light") == 0) g_theme = 2;
+            else g_theme = 0;
         }
         DWORD dw = 0, cbd = sizeof(DWORD);
         if (RegQueryValueExW(k, L"Colored", NULL, &type, (BYTE*)&dw, &cbd) == ERROR_SUCCESS
@@ -507,10 +550,12 @@ static void SaveSettings(void)
                        (DWORD)((lstrlenW(mode) + 1) * sizeof(WCHAR)));
         const WCHAR* units = (g_units == 1) ? L"kb" :
                              (g_units == 2) ? L"mb" :
-                             (g_units == 3) ? L"sep" : L"auto";
+                             (g_units == 3) ? L"bits" :
+                             (g_units == 4) ? L"kbb" :
+                             (g_units == 5) ? L"mbb" : L"auto";
         RegSetValueExW(k, L"Units", 0, REG_SZ, (const BYTE*)units,
                        (DWORD)((lstrlenW(units) + 1) * sizeof(WCHAR)));
-        const WCHAR* theme = (g_theme == 2) ? L"light" : L"dark";   // v2.5.0: "auto" retired
+        const WCHAR* theme = (g_theme == 1) ? L"dark" : (g_theme == 2) ? L"light" : L"auto";
         RegSetValueExW(k, L"Theme", 0, REG_SZ, (const BYTE*)theme,
                        (DWORD)((lstrlenW(theme) + 1) * sizeof(WCHAR)));
         DWORD colored = g_colorSpeeds ? 1 : 0;
@@ -609,8 +654,8 @@ static void RecalcAndPosition(void)
         }
     }
 
-    // v2.3.0: the separate-lines layout doubles the widget height — clamp
-    // it to the real taskbar height so the two lines can never overflow.
+    // clamp the widget height to the real taskbar height so it can never
+    // overflow (any layout, any DPI).
     int useH = g_winH;
     if (useH > th) useH = th - 2;
     if (useH < DpiVal(16)) useH = DpiVal(16);
@@ -766,22 +811,8 @@ static void OnPaint(HWND hwnd)
     if (g_font) {
         HGDIOBJ of = SelectObject(mem, g_font);
         SetBkMode(mem, TRANSPARENT);
-        if (g_units == 3) {
-            // v2.4.0 FOUR SEPARATE rows: Mb/s, Kb/s (bits) then MB/s, KB/s
-            // (bytes). Every row is one unit family — nothing is merged.
-            RECT r1 = rc, r2 = rc, r3 = rc, r4 = rc;
-            int q = (rc.bottom - rc.top) / 4;
-            r1.bottom = rc.top + q - 1;
-            r2.top    = rc.top + q;      r2.bottom = rc.top + 2 * q - 1;
-            r3.top    = rc.top + 2 * q;  r3.bottom = rc.top + 3 * q - 1;
-            r4.top    = rc.top + 3 * q;
-            PaintSpeedRow(mem, r1, g_lineUpMb, g_lineDnMb, g_lineMb);
-            PaintSpeedRow(mem, r2, g_lineUpKb, g_lineDnKb, g_lineKb);
-            PaintSpeedRow(mem, r3, g_lineUpMB, g_lineDnMB, g_lineMB);
-            PaintSpeedRow(mem, r4, g_lineUpKB, g_lineDnKB, g_lineKB);
-        } else {
-            PaintSpeedRow(mem, rc, g_upText, g_downText, g_text);
-        }
+        // v2.5.0: ONE row, always — no stacked layouts exist anymore
+        PaintSpeedRow(mem, rc, g_upText, g_downText, g_text);
         SelectObject(mem, of);
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -832,14 +863,18 @@ static void ShowContextMenu(HWND hwnd)
     HMENU m = CreatePopupMenu();
     if (!m) return;
 
-    HMENU mu = CreatePopupMenu();          // Units
-    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_BOTH, L"All four rows: Mb/s, Kb/s, MB/s, KB/s");
-    AppendMenuW(mu, MF_STRING | (g_units == 0 ? MF_CHECKED : 0), IDM_UNITS_AUTO, L"Auto");
-    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"Kb/s");
-    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"Mb/s");
+    HMENU mu = CreatePopupMenu();          // Units — every choice is ONE row
+    AppendMenuW(mu, MF_STRING | (g_units == 0 ? MF_CHECKED : 0), IDM_UNITS_AUTO, L"Auto (B/s, KB/s, MB/s)");
+    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"KB/s");
+    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"MB/s");
+    AppendMenuW(mu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_ABITS, L"Auto (b/s, Kb/s, Mb/s)");
+    AppendMenuW(mu, MF_STRING | (g_units == 4 ? MF_CHECKED : 0), IDM_UNITS_KBB,   L"Kb/s");
+    AppendMenuW(mu, MF_STRING | (g_units == 5 ? MF_CHECKED : 0), IDM_UNITS_MBB,   L"Mb/s");
 
-    HMENU mt = CreatePopupMenu();          // Theme (v2.5.0: black or light)
-    AppendMenuW(mt, MF_STRING | (g_theme != 2 ? MF_CHECKED : 0), IDM_THEME_DARK, L"Dark (black background)");
+    HMENU mt = CreatePopupMenu();          // Theme
+    AppendMenuW(mt, MF_STRING | (g_theme == 0 ? MF_CHECKED : 0), IDM_THEME_AUTO, L"Auto (match taskbar)");
+    AppendMenuW(mt, MF_STRING | (g_theme == 1 ? MF_CHECKED : 0), IDM_THEME_DARK, L"Dark");
     AppendMenuW(mt, MF_STRING | (g_theme == 2 ? MF_CHECKED : 0), IDM_THEME_LITE, L"Light");
 
     AppendMenuW(m, MF_POPUP, (UINT_PTR)mu, L"&Units");
@@ -893,7 +928,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (++g_colorTick >= 5) {
             g_colorTick = 0;
-            TrayUpdateTip();             // v2.5.0: theme is deterministic, no re-sampling
+            if (g_theme == 0) {          // auto theme re-samples the taskbar
+                ApplyTheme();
+            }
+            TrayUpdateTip();
         }
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
@@ -936,20 +974,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_UNITS_AUTO:
         case IDM_UNITS_KB:
         case IDM_UNITS_MB:
-        case IDM_UNITS_BOTH:
-            g_units = (LOWORD(wp) == IDM_UNITS_KB) ? 1 :
-                      (LOWORD(wp) == IDM_UNITS_MB) ? 2 :
-                      (LOWORD(wp) == IDM_UNITS_BOTH) ? 3 : 0;
+        case IDM_UNITS_ABITS:
+        case IDM_UNITS_KBB:
+        case IDM_UNITS_MBB:
+            switch (LOWORD(wp)) {
+            case IDM_UNITS_KB:    g_units = 1; break;
+            case IDM_UNITS_MB:    g_units = 2; break;
+            case IDM_UNITS_ABITS: g_units = 3; break;
+            case IDM_UNITS_KBB:   g_units = 4; break;
+            case IDM_UNITS_MBB:   g_units = 5; break;
+            default:              g_units = 0; break;
+            }
             SaveSettings();
             CreateFontForDpi();      // re-measure the window for the new format
             UpdateSpeedText();
             RecalcAndPosition();
             InvalidateRect(hwnd, NULL, FALSE);
             break;
-        case IDM_THEME_AUTO:                 // legacy id — lands on dark/black
+        case IDM_THEME_AUTO:
         case IDM_THEME_DARK:
         case IDM_THEME_LITE:
-            g_theme = (LOWORD(wp) == IDM_THEME_LITE) ? 2 : 1;
+            g_theme = (LOWORD(wp) == IDM_THEME_DARK) ? 1 :
+                      (LOWORD(wp) == IDM_THEME_LITE) ? 2 : 0;
             ApplyTheme();
             SaveSettings();
             // v2.2.0: repaint IMMEDIATELY (the v2.1.x toggle only posted an

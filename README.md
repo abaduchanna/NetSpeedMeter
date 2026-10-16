@@ -1,25 +1,34 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.5.0 — pure black background + four separate rows
+## ✅ NEW in v2.5.0 — ONE row, black background
 
-1. **Background is now true BLACK** (`RGB(0,0,0)`) — the Dark theme no longer
-   paints the old dark-gray bar, and the `Auto (match taskbar)` sampler is
-   retired. Any saved `auto` theme migrates to Dark automatically, so after
-   upgrading the widget background is always pure black unless you
-   explicitly pick `Light` (warm white, dark text). The Theme menu is now
-   just **Dark (black background)** / **Light**.
-2. **Four separate speed rows** (introduced in v2.4.0, still the default
-   units mode): row 1 = `Mb/s`, row 2 = `Kb/s` (BITS family, lowercase b —
-   the unit ISPs advertise), row 3 = `MB/s`, row 4 = `KB/s` (BYTES family,
-   capital B — the unit browsers/OS show while downloading a file).
-   8 bits = 1 byte, so the bytes rows always equal the bits rows divided
-   by 8. No display string ever merges the two unit families, and no
-   string mixes capital-B bytes with lowercase-b bits.
-3. The window grows to four compact rows (7 pt face at standard DPI) and
-   stays clamped to the real taskbar height; the tray tooltip carries the
-   bits row.
+1. **ONE row** — the v2.4.0 four-row stacked layout is REMOVED (owner:
+   "ek row chaiye sab ek sath nahi"). Every units mode now draws a single
+   taskbar-height row: `↑ 350.0 KB/s  ↓ 2.35 MB/s` style. Upload and
+   download stay **separate readouts** — each with its own arrow and color
+   (upload red, download green) — never attached into one value, never
+   stacked into multiple rows. The window is back to normal taskbar height.
+2. **Units menu: both families, one row each** — BYTES family (capital B):
+   `Auto (B/s, KB/s, MB/s)`, `KB/s`, `MB/s`; BITS family (lowercase b):
+   `Auto (b/s, Kb/s, Mb/s)`, `Kb/s`, `Mb/s`. The 8-bits-equal-1-byte rule is
+   built in: KB/s = Kb/s ÷ 8 and MB/s = Mb/s ÷ 8. **Default = BYTES Auto**
+   (the unit your browser shows for file downloads).
+3. **Black background** — the Dark theme now uses pure black (`#000000`)
+   and Dark is the default theme (owner: "bg black").
+   `Auto (match taskbar)` and `Light` remain in the Theme menu, and theme
+   changes still apply and persist instantly.
+4. Old saved settings migrate automatically: legacy `sep` / `both` / `auto`
+   unit values and any saved theme keep working (unknown unit values fall
+   back to BYTES Auto).
 
-## v2.3.0 — separate Kb/s + Mb/s lines, small "b" everywhere
+## v2.4.0 (superseded by v2.5.0) — four separate rows, bits + bytes families
+
+1. ~~Four stacked rows (Mb/s, Kb/s, MB/s, KB/s)~~ — replaced by the v2.5.0
+   one-row layout above.
+2. Kept: the BYTES vs BITS distinction with correct casing (MB/s capital B,
+   Mb/s lowercase b) — now available as one-row modes in the Units menu.
+
+## v2.3.0 (superseded) — separate Kb/s + Mb/s lines, small "b" everywhere
 
 1. **"Both" is REPLACED by "Kb/s + Mb/s (separate lines)"** — the v2.2.0
    mashed one-line format (`↓ 1582.4 KB/s (1.54 MB/s)`) is gone. The widget
@@ -174,9 +183,9 @@ application that embeds into the taskbar using the same technique as
 
 **Install / run**
 
-1. Download `NetSpeedMeter-2.5.0-x64-Setup.exe` from
+1. Download `NetSpeedMeter-2.3.0-x64-Setup.exe` from
    [Releases](../../releases) and run it — that's it. (Prefer portable?
-   Grab `NetSpeedMonitor-v2.5.0-x64.exe` instead and skip to step 3.)
+   Grab `NetSpeedMonitor-v2.3.0-x64.exe` instead and skip to step 3.)
 2. The installer adds a Start Menu shortcut and, if you tick the box, the
    start-with-Windows entry — no admin rights needed at any point.
 3. Run it — the speed display appears in the taskbar, just left of the clock
