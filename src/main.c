@@ -398,7 +398,7 @@ static void AccumulateDeltas(double* down, double* up)
         ZeroMemory(&row2, sizeof(row2));
         row2.InterfaceIndex = idx;            // per MSDN: Luid 0 -> index used
         if (GetIfEntry2(&row2) == NO_ERROR) {
-            type = (int)row2.InterfaceType;
+            type = (int)row2.Type;
             in   = row2.InOctets;
             out  = row2.OutOctets;
             src  = 2;
@@ -894,7 +894,7 @@ static void CopyDiagToClipboard(HWND hwnd)
                             swprintf_s(line, 200,
                                 L"if=%lu type=%lu oper=%d in=%I64u out=%I64u src=ndis6\r\n",
                                 (unsigned long)r2.InterfaceIndex,
-                                (unsigned long)r2.InterfaceType,
+                                (unsigned long)r2.Type,
                                 (int)r2.OperStatus,
                                 r2.InOctets, r2.OutOctets);
                             wcscat_s(buf, 4096, line);
