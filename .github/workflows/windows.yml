@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+env:
+  # 2.2.0 on tags v2.2.0, 2.2.0 on main too (single source of truth)
+  APP_VER: "2.2.0"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -40,15 +44,15 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=2.1.1 installer.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${env:APP_VER} installer.iss
           Get-ChildItem dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NetSpeedMeter-v2.1.1-x64
+          name: NetSpeedMeter-v${{ env.APP_VER }}-x64
           path: |
             src/NetSpeedMonitor.exe
-            dist/NetSpeedMeter-2.1.1-x64-Setup.exe
+            dist/NetSpeedMeter-${{ env.APP_VER }}-x64-Setup.exe
           if-no-files-found: error
 
   release:
@@ -58,23 +62,27 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: NetSpeedMeter-v2.1.1-x64
+          name: NetSpeedMeter-v${{ env.APP_VER }}-x64
       - name: Create release + attach assets
         shell: bash
         run: |
-          find . -name 'NetSpeedMonitor.exe' -exec mv {} NetSpeedMonitor-v2.1.1-x64.exe \;
-          find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-2.1.1-x64-Setup.exe \;
-          ls -la NetSpeedMonitor-v2.1.1-x64.exe NetSpeedMeter-2.1.1-x64-Setup.exe
+          find . -name 'NetSpeedMonitor.exe' -exec mv {} NetSpeedMonitor-v${APP_VER}-x64.exe \;
+          find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-${APP_VER}-x64-Setup.exe \;
+          ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
-            --title "NetSpeedMeter ${GITHUB_REF_NAME} - installer edition" \
+            --title "NetSpeedMeter ${GITHUB_REF_NAME} - Both units + theme fix" \
             --notes "## Downloads
 
-          - **NetSpeedMeter-${GITHUB_REF_NAME}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
-          - **NetSpeedMonitor-v2.1.1-x64.exe** - portable single exe
+          - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
+          - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
-          v2.1.1 ships a proper setup installer; app features unchanged from v2.1.0 (Units Auto/KB/s/MB/s, Theme Auto/Dark/Light, colored speeds)." \
-            NetSpeedMonitor-v2.1.1-x64.exe NetSpeedMeter-2.1.1-x64-Setup.exe || \
-          gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v2.1.1-x64.exe NetSpeedMeter-2.1.1-x64-Setup.exe --clobber
+          ## What's new in v2.2.0
+          - **Both (KB/s + MB/s)** units mode - each direction shows both units, e.g. ↓ 1582.4 KB/s (1.54 MB/s). Both is the new default; saved Auto settings migrate to Both automatically.
+          - **Theme fix** - Auto (match taskbar) now samples the taskbar with correct client coordinates (+ screen fallback), and Dark/Light switches repaint immediately.
+
+          Right-click the tray icon (or the widget) for Units / Theme / Colored speeds / Floating mode / diagnostics." \
+            NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \
+          gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
