@@ -37,11 +37,20 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.3.0 changes (owner request 2026-10-17: "KB/s+MB/s nikal aur alag se
+// Kb/s aur Mb/s dal, b small hai capital nahi"):
+//  15. SEPARATE LINES mode replaces the v2.2.0 mashed "Both" string — the
+//      widget now draws TWO lines: Mb/s on top, Kb/s below (each with its
+//      own up/down arrows, colored-speeds aware). The single-line
+//      "1582.4 KB/s (1.54 MB/s)" format is gone completely.
+//  16. SMALL b everywhere: B/s -> b/s, KB/s -> Kb/s, MB/s -> Mb/s,
+//      GB/s -> Gb/s (menu, formats, tooltip, About).
+//  17. Saved "both" (and "auto") migrate to the new separate-lines mode;
+//      the value is stored as "sep" from now on. Window height doubles
+//      for the two-line layout and is clamped to the taskbar height.
+//
 // v2.2.0 features/fixes (owner requests 2026-10-16):
-//  13. UNITS "Both (KB/s + MB/s)" mode - each direction shows BOTH units,
-//      e.g. "v 1582.4 KB/s (1.54 MB/s)". "Both" is now the DEFAULT unit
-//      mode for all installs (owner: "Mb/s Kb/s dono dal do"), and a saved
-//      "auto" setting migrates to "both" on first start.
+//  13. (REPLACED by v2.3.0) was: mashed "Both (KB/s + MB/s)" single line.
 //  14. THEME toggle fix - the Auto theme sampler passed SCREEN coordinates
 //      to the taskbar CLIENT-area DC (GetPixel went out of bounds and
 //      returned CLR_INVALID on every call, so Auto never matched the real
@@ -83,7 +92,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.2.0"
+#define APP_VERSION  L"2.3.0"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -121,10 +130,16 @@ static COLORREF g_bgColor      = RGB(32, 32, 32);
 static COLORREF g_textColor    = RGB(240, 240, 240);
 static COLORREF g_upColor      = RGB(255, 112, 100);   // upload RED
 static COLORREF g_downColor    = RGB(110, 231, 133);   // download GREEN
-static WCHAR  g_text[160]      = L"\x2191 0 B/s  \x2193 0 B/s";
-static WCHAR  g_upText[80]     = L"\x2191 0 B/s";
-static WCHAR  g_downText[80]   = L"\x2193 0 B/s";
-static int    g_units          = 0;   // 0=auto  1=KB/s  2=MB/s
+static WCHAR  g_text[160]      = L"\x2191 0 b/s  \x2193 0 b/s";
+static WCHAR  g_upText[80]     = L"\x2191 0 b/s";
+static WCHAR  g_downText[80]   = L"\x2193 0 b/s";
+static WCHAR  g_lineMb[80]     = L"\x2191 0.00 Mb/s  \x2193 0.00 Mb/s";
+static WCHAR  g_lineKb[80]     = L"\x2191 0.0 Kb/s  \x2193 0.0 Kb/s";
+static WCHAR  g_lineUpMb[40]   = L"\x2191 0.00 Mb/s";
+static WCHAR  g_lineDnMb[40]   = L"\x2193 0.00 Mb/s";
+static WCHAR  g_lineUpKb[40]   = L"\x2191 0.0 Kb/s";
+static WCHAR  g_lineDnKb[40]   = L"\x2193 0.0 Kb/s";
+static int    g_units          = 0;   // 0=auto  1=Kb/s  2=Mb/s  3=separate lines
 static int    g_theme          = 0;   // 0=auto  1=dark  2=light
 static BOOL   g_colorSpeeds    = TRUE; // up red / down green
 static int    g_colorTick      = 0;
@@ -194,32 +209,30 @@ static UINT DpiOfTaskbar(HWND taskbar)
 }
 
 // ---------------------------------------------------------------- speed
-// g_units: 0 = auto-scale (B/s .. GB/s), 1 = always KB/s, 2 = always MB/s,
-//          3 = BOTH units (KB/s first, MB/s in parentheses)
+// g_units: 0 = auto-scale (b/s .. Gb/s), 1 = always Kb/s, 2 = always Mb/s,
+//          3 = SEPARATE lines (owner rule 2026-10-17: the old mashed
+//          "1582.4 KB/s (1.54 MB/s)" string is REMOVED; Kb/s and Mb/s are
+//          shown as two separate lines instead). Units use a SMALL b
+//          everywhere (Kb/s, Mb/s) — owner: "b small hai capital nahi".
 static void FormatRate(double bps, WCHAR* out, size_t cch)
 {
     if (bps < 0) bps = 0;
-    if (g_units == 3) {
-        swprintf_s(out, cch, L"%.1f KB/s (%.2f MB/s)",
-                   bps / 1024.0, bps / (1024.0 * 1024.0));
-        return;
-    }
     if (g_units == 1) {
-        swprintf_s(out, cch, L"%.1f KB/s", bps / 1024.0);
+        swprintf_s(out, cch, L"%.1f Kb/s", bps / 1024.0);
         return;
     }
     if (g_units == 2) {
-        swprintf_s(out, cch, L"%.2f MB/s", bps / (1024.0 * 1024.0));
+        swprintf_s(out, cch, L"%.2f Mb/s", bps / (1024.0 * 1024.0));
         return;
     }
     if (bps >= 1024.0 * 1024.0 * 1024.0)
-        swprintf_s(out, cch, L"%.2f GB/s", bps / (1024.0 * 1024.0 * 1024.0));
+        swprintf_s(out, cch, L"%.2f Gb/s", bps / (1024.0 * 1024.0 * 1024.0));
     else if (bps >= 1024.0 * 1024.0)
-        swprintf_s(out, cch, L"%.1f MB/s", bps / (1024.0 * 1024.0));
+        swprintf_s(out, cch, L"%.1f Mb/s", bps / (1024.0 * 1024.0));
     else if (bps >= 1024.0)
-        swprintf_s(out, cch, L"%.1f KB/s", bps / 1024.0);
+        swprintf_s(out, cch, L"%.1f Kb/s", bps / 1024.0);
     else
-        swprintf_s(out, cch, L"%.0f B/s", bps);
+        swprintf_s(out, cch, L"%.0f b/s", bps);
 }
 
 // Sum per-interface octet deltas over all connected non-loopback adapters.
@@ -278,12 +291,23 @@ static void UpdateSpeedText(void)
         up   /= dt;
         if (down < 0 || down > 1e12) down = 0;
         if (up   < 0 || up   > 1e12) up   = 0;
-        WCHAR d[40], u[40];
-        FormatRate(down, d, 40);
-        FormatRate(up,   u, 40);
-        swprintf_s(g_upText,   80, L"\x2191 %s", u);
-        swprintf_s(g_downText, 80, L"\x2193 %s", d);
-        swprintf_s(g_text,    160, L"%s  %s", g_upText, g_downText);
+        if (g_units == 3) {
+            // SEPARATE lines mode: one line Mb/s, one line Kb/s (owner rule)
+            swprintf_s(g_lineUpMb, 40, L"\x2191 %.2f Mb/s", up   / (1024.0 * 1024.0));
+            swprintf_s(g_lineDnMb, 40, L"\x2193 %.2f Mb/s", down / (1024.0 * 1024.0));
+            swprintf_s(g_lineMb,   80, L"%s  %s", g_lineUpMb, g_lineDnMb);
+            swprintf_s(g_lineUpKb, 40, L"\x2191 %.1f Kb/s", up   / 1024.0);
+            swprintf_s(g_lineDnKb, 40, L"\x2193 %.1f Kb/s", down / 1024.0);
+            swprintf_s(g_lineKb,   80, L"%s  %s", g_lineUpKb, g_lineDnKb);
+            swprintf_s(g_text,    160, L"%s | %s", g_lineMb, g_lineKb);
+        } else {
+            WCHAR d[40], u[40];
+            FormatRate(down, d, 40);
+            FormatRate(up,   u, 40);
+            swprintf_s(g_upText,   80, L"\x2191 %s", u);
+            swprintf_s(g_downText, 80, L"\x2193 %s", d);
+            swprintf_s(g_text,    160, L"%s  %s", g_upText, g_downText);
+        }
     }
     g_lastTick = now;
 }
@@ -381,13 +405,18 @@ static void CreateFontForDpi(void)
         SIZE sz;
         WCHAR sample[160];
         if (g_units == 3)
+            // per-line sample: Kb/s line is the wider of the two; the window
+            // is TALL enough for BOTH lines (v2.3.0 separate-lines mode)
             swprintf_s(sample, 160,
-                L"\x2191 8888.8 KB/s (888.88 MB/s)  \x2193 8888.8 KB/s (888.88 MB/s)");
+                L"\x2191 8888.8 Kb/s  \x2193 8888.8 Kb/s");
         else
-            swprintf_s(sample, 160, L"\x2191 888.88 MB/s  \x2193 888.88 MB/s");
+            swprintf_s(sample, 160, L"\x2191 888.88 Mb/s  \x2193 888.88 Mb/s");
         if (GetTextExtentPoint32W(dc, sample, (int)wcslen(sample), &sz)) {
             g_winW = sz.cx + DpiVal(14);
-            g_winH = sz.cy + DpiVal(4);
+            if (g_units == 3)
+                g_winH = sz.cy * 2 + DpiVal(6);      // two stacked lines
+            else
+                g_winH = sz.cy + DpiVal(4);
             if (g_winH < DpiVal(20)) g_winH = DpiVal(20);
         }
         SelectObject(dc, old);
@@ -451,8 +480,7 @@ static void LoadSettings(void)
             && type == REG_SZ) {
             if (lstrcmpiW(v, L"kb") == 0) g_units = 1;
             else if (lstrcmpiW(v, L"mb") == 0) g_units = 2;
-            else if (lstrcmpiW(v, L"both") == 0) g_units = 3;
-            else g_units = 3;   // "auto" and unknown values migrate to Both (v2.2.0)
+            else g_units = 3;   // "sep", legacy "both", "auto", unknown -> separate lines
         }
         cb = sizeof(v);
         if (RegQueryValueExW(k, L"Theme", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
@@ -479,7 +507,7 @@ static void SaveSettings(void)
                        (DWORD)((lstrlenW(mode) + 1) * sizeof(WCHAR)));
         const WCHAR* units = (g_units == 1) ? L"kb" :
                              (g_units == 2) ? L"mb" :
-                             (g_units == 3) ? L"both" : L"auto";
+                             (g_units == 3) ? L"sep" : L"auto";
         RegSetValueExW(k, L"Units", 0, REG_SZ, (const BYTE*)units,
                        (DWORD)((lstrlenW(units) + 1) * sizeof(WCHAR)));
         const WCHAR* theme = (g_theme == 1) ? L"dark" : (g_theme == 2) ? L"light" : L"auto";
@@ -581,15 +609,21 @@ static void RecalcAndPosition(void)
         }
     }
 
+    // v2.3.0: the separate-lines layout doubles the widget height — clamp
+    // it to the real taskbar height so the two lines can never overflow.
+    int useH = g_winH;
+    if (useH > th) useH = th - 2;
+    if (useH < DpiVal(16)) useH = DpiVal(16);
+
     // vertical: center on the Start button height (TrafficMonitor formula,
     // incl. the touch-device correction term)
-    int y = (th - g_winH) / 2;
+    int y = (th - useH) / 2;
     HWND hS = FindWindowExW(g_hTaskbar, NULL, L"Start", NULL);
     if (hS) {
         RECT rs;
         if (GetWindowRect(hS, &rs)) {
             int sh = rs.bottom - rs.top;
-            if (sh > 0 && sh <= th) y = (sh - g_winH) / 2 + (th - sh);
+            if (sh > 0 && sh <= th) y = (sh - useH) / 2 + (th - sh);
         }
     }
 
@@ -598,7 +632,7 @@ static void RecalcAndPosition(void)
     else                x = tw - g_winW - DpiVal(88) - DpiVal(2);  // clock area guess
     if (x < DpiVal(2)) x = DpiVal(2);
 
-    SetWindowPos(me, NULL, x, y, g_winW, g_winH,
+    SetWindowPos(me, NULL, x, y, g_winW, useH,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
 
     // ---- visibility hardening ------------------------------------------
@@ -677,6 +711,41 @@ static void CopyDiagToClipboard(HWND hwnd)
 }
 
 // ---------------------------------------------------------------- paint
+// One speed row: colored mode draws up (red) + down (green) separately,
+// plain mode draws the joined string centered. Used by BOTH the single
+// line layout and the v2.3.0 separate-lines layout.
+static void PaintSpeedRow(HDC dc, RECT rc,
+                          const WCHAR* up, const WCHAR* down,
+                          const WCHAR* joined)
+{
+    if (g_colorSpeeds) {
+        SIZE su, ss, sd;
+        GetTextExtentPoint32W(dc, up,   (int)wcslen(up),   &su);
+        GetTextExtentPoint32W(dc, L"  ", 2, &ss);
+        GetTextExtentPoint32W(dc, down, (int)wcslen(down), &sd);
+        int total = su.cx + ss.cx + sd.cx;
+        int x0 = (rc.left + rc.right - total) / 2;
+        if (x0 < rc.left) x0 = rc.left;
+        RECT r1 = { x0, rc.top, x0 + su.cx, rc.bottom };
+        SetTextColor(dc, g_upColor);
+        DrawTextW(dc, up, -1, &r1,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        RECT r2 = { x0 + su.cx, rc.top, x0 + su.cx + ss.cx, rc.bottom };
+        SetTextColor(dc, g_textColor);
+        DrawTextW(dc, L"  ", -1, &r2,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        RECT r3 = { x0 + su.cx + ss.cx, rc.top,
+                    x0 + su.cx + ss.cx + sd.cx, rc.bottom };
+        SetTextColor(dc, g_downColor);
+        DrawTextW(dc, down, -1, &r3,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else {
+        SetTextColor(dc, g_textColor);
+        DrawTextW(dc, joined, -1, &rc,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+}
+
 static void OnPaint(HWND hwnd)
 {
     PAINTSTRUCT ps;
@@ -697,32 +766,16 @@ static void OnPaint(HWND hwnd)
     if (g_font) {
         HGDIOBJ of = SelectObject(mem, g_font);
         SetBkMode(mem, TRANSPARENT);
-        if (g_colorSpeeds) {
-            // colored layout: up (red) + separator + down (green), centered
-            SIZE su, ss, sd;
-            GetTextExtentPoint32W(mem, g_upText,   (int)wcslen(g_upText),   &su);
-            GetTextExtentPoint32W(mem, L"  ", 2, &ss);
-            GetTextExtentPoint32W(mem, g_downText, (int)wcslen(g_downText), &sd);
-            int total = su.cx + ss.cx + sd.cx;
-            int x0 = (rc.right - total) / 2;
-            if (x0 < 0) x0 = 0;
-            RECT r1 = { x0, rc.top, x0 + su.cx, rc.bottom };
-            SetTextColor(mem, g_upColor);
-            DrawTextW(mem, g_upText, -1, &r1,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-            RECT r2 = { x0 + su.cx, rc.top, x0 + su.cx + ss.cx, rc.bottom };
-            SetTextColor(mem, g_textColor);
-            DrawTextW(mem, L"  ", -1, &r2,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            RECT r3 = { x0 + su.cx + ss.cx, rc.top,
-                        x0 + su.cx + ss.cx + sd.cx, rc.bottom };
-            SetTextColor(mem, g_downColor);
-            DrawTextW(mem, g_downText, -1, &r3,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (g_units == 3) {
+            // SEPARATE lines (v2.3.0): Mb/s row on top, Kb/s row below
+            RECT top = rc, bot = rc;
+            int half = (rc.bottom - rc.top) / 2;
+            top.bottom    = rc.top + half - 1;
+            bot.top       = rc.top + half;
+            PaintSpeedRow(mem, top, g_lineUpMb, g_lineDnMb, g_lineMb);
+            PaintSpeedRow(mem, bot, g_lineUpKb, g_lineDnKb, g_lineKb);
         } else {
-            SetTextColor(mem, g_textColor);
-            DrawTextW(mem, g_text, -1, &rc,
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            PaintSpeedRow(mem, rc, g_upText, g_downText, g_text);
         }
         SelectObject(mem, of);
     }
@@ -775,10 +828,10 @@ static void ShowContextMenu(HWND hwnd)
     if (!m) return;
 
     HMENU mu = CreatePopupMenu();          // Units
-    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_BOTH, L"Both (KB/s + MB/s)");
+    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_BOTH, L"Kb/s + Mb/s (separate lines)");
     AppendMenuW(mu, MF_STRING | (g_units == 0 ? MF_CHECKED : 0), IDM_UNITS_AUTO, L"Auto");
-    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"KB/s only");
-    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"MB/s only");
+    AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"Kb/s");
+    AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"Mb/s");
 
     HMENU mt = CreatePopupMenu();          // Theme
     AppendMenuW(mt, MF_STRING | (g_theme == 0 ? MF_CHECKED : 0), IDM_THEME_AUTO, L"Auto (match taskbar)");
@@ -921,7 +974,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 L"NetSpeedMonitor - taskbar network speed display (v" APP_VERSION L")\r\n\r\n"
                 L"Embeds into the Windows 10/11 taskbar (SetParent technique,\r\n"
                 L"as pioneered by TrafficMonitor by zhongyang219).\r\n\r\n"
-                L"Menu: Units (Both KB/s + MB/s / Auto / KB/s / MB/s),\r\n"
+                L"Menu: Units (Kb/s + Mb/s separate lines / Auto / Kb/s / Mb/s),\r\n"
                 L"Theme (Auto/Dark/Light), colored speeds (up red, down green).\r\n\r\n"
                 L"Not visible in the taskbar? Right-click the tray icon\r\n"
                 L"(hidden icons ^) and enable 'Floating mode' (truly topmost).\r\n"

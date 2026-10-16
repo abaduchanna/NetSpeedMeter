@@ -1,12 +1,24 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.2.0 — Both units + theme toggle fix
+## ✅ NEW in v2.3.0 — separate Kb/s + Mb/s lines, small "b" everywhere
 
-1. **Units: "Both (KB/s + MB/s)"** — each direction now shows BOTH units at
-   once, e.g. `↓ 1582.4 KB/s (1.54 MB/s)`. "Both" is the **new default**
-   (previously `Auto`), and a saved `Auto` setting migrates to `Both` on the
-   first start. The other modes (`Auto`, `KB/s only`, `MB/s only`) are still
-   in the menu — everything stays persisted in `HKCU\Software\NetSpeedMonitor`.
+1. **"Both" is REPLACED by "Kb/s + Mb/s (separate lines)"** — the v2.2.0
+   mashed one-line format (`↓ 1582.4 KB/s (1.54 MB/s)`) is gone. The widget
+   now draws **two separate lines**: Mb/s on top, Kb/s below, each with its
+   own up/down arrows. This separate-lines mode is the **default**; the
+   window automatically grows to two text rows (and is clamped to the real
+   taskbar height, so it can never overflow). The other modes
+   (`Auto`, `Kb/s`, `Mb/s`) are still in the menu — everything stays
+   persisted in `HKCU\Software\NetSpeedMonitor` (the value is stored as
+   `sep` now; the legacy `both`/`auto` values migrate automatically).
+2. **Small b everywhere** — all unit strings now use the lowercase-b style:
+   `b/s`, `Kb/s`, `Mb/s`, `Gb/s` (menu labels, formats, tray tooltip,
+   About box). No capital-B `KB/s` / `MB/s` anywhere.
+
+## v2.2.0 — Both units + theme toggle fix (superseded format, kept fixes)
+
+1. ~~Units: "Both (KB/s + MB/s)"~~ — replaced by the v2.3.0 separate-lines
+   mode above.
 2. **Theme toggle fix** — the `Auto (match taskbar)` sampler used to pass
    screen coordinates into the taskbar's client-area DC, so `GetPixel`
    returned nothing and Auto silently kept the startup color forever. The
@@ -20,14 +32,14 @@
 
 Downloads now come in two flavors on the [Releases](../../releases) page:
 
-- **`NetSpeedMeter-2.2.0-x64-Setup.exe`** (recommended) — proper installer:
+- **`NetSpeedMeter-2.3.0-x64-Setup.exe`** (recommended) — proper installer:
   per-user install to `%LOCALAPPDATA%\NetSpeedMeter` (**no admin/UAC**),
   Start Menu shortcut, optional Desktop shortcut, optional
   **start-with-Windows** checkbox (writes the HKCU Run value for you), and a
   clean uninstaller (your speed settings are kept). App code is unchanged
   from v2.1.0 — same exe, same features, now with Explorer file-properties
-  version info (2.1.1.0).
-- **`NetSpeedMonitor-v2.2.0-x64.exe`** — the classic portable single exe,
+  version info (2.3.0.0).
+- **`NetSpeedMonitor-v2.3.0-x64.exe`** — the classic portable single exe,
   as before.
 
 ## v2.1.0 — Units menu, Theme menu, colored speeds (up RED, down GREEN)
@@ -143,9 +155,9 @@ application that embeds into the taskbar using the same technique as
 
 **Install / run**
 
-1. Download `NetSpeedMeter-2.2.0-x64-Setup.exe` from
+1. Download `NetSpeedMeter-2.3.0-x64-Setup.exe` from
    [Releases](../../releases) and run it — that's it. (Prefer portable?
-   Grab `NetSpeedMonitor-v2.2.0-x64.exe` instead and skip to step 3.)
+   Grab `NetSpeedMonitor-v2.3.0-x64.exe` instead and skip to step 3.)
 2. The installer adds a Start Menu shortcut and, if you tick the box, the
    start-with-Windows entry — no admin rights needed at any point.
 3. Run it — the speed display appears in the taskbar, just left of the clock

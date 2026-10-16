@@ -1,7 +1,7 @@
 name: windows-build
 on:
   push:
-    branches: [main]
+    branches: [ main ]
     tags: ['v*']
   workflow_dispatch: {}
 
@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 env:
-  # 2.2.0 on tags v2.2.0, 2.2.0 on main too (single source of truth)
-  APP_VER: "2.2.0"
+  # 2.3.0 on tags v2.3.0, 2.3.0 on main too (single source of truth)
+  APP_VER: "2.3.0"
 
 jobs:
   build:
