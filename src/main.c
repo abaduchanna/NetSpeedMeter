@@ -37,6 +37,25 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.6.1 changes (owner request 2026-10-17: "speed-measurement system kahan
+// hai?" - v2.6.0 still showed 0.00/0.00 while traffic flowed):
+//  27. ROOT CAUSE FOUND IN THE ORIGINAL'S OWN DATA SOURCE: the legacy
+//      GetIfEntry(MIB_IFROW) 32-bit dwInOctets/dwOutOctets counters are NOT
+//      maintained by every modern Win10/11 NDIS6 driver - when a driver only
+//      implements ifTable2, GetIfEntry returns frozen/zero octets forever and
+//      every delta is exactly 0 (both arrows 0.00). The classic 2.5.4.0 was
+//      built for XP/7-era NDIS5 drivers, so its own engine hits the same
+//      wall on those machines.
+//  28. FIX, same system, correct counter layer: the engine now samples
+//      GetIfEntry2 (MIB_IF_ROW2, 64-bit InOctets/OutOctets - the exact
+//      counters Task Manager uses) FIRST for every adapter and falls back
+//      to the legacy GetIfEntry row only if the NDIS6 call fails. Delta
+//      semantics stay the original's (per-adapter octet deltas, anomaly ->
+//      0 + re-prime, adapter gone -> 0). Display untouched.
+//  29. 'Copy diagnostics' now also dumps a live adapter snapshot (index,
+//      type, oper status, In/Out octets, counter source) so any residual
+//      machine-specific issue is diagnosable from one clipboard paste.
+//
 // v2.6.0 changes (owner request 2026-10-17: "msi check karo is ka pura system
 // mujhe NSM main chahiye bas abhi wala display same rakhna"):
 //  24. SPEED ENGINE = the ORIGINAL NetSpeedMonitor 2.5.4.0 system, ported
@@ -137,7 +156,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.6.0"
+#define APP_VERSION  L"2.6.1"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -306,28 +325,36 @@ static void FormatRateBytes(double bps, WCHAR* out, size_t cch)
         swprintf_s(out, cch, L"%.0f B/s", Bps);
 }
 
-// v2.6.0 SPEED ENGINE = ORIGINAL NetSpeedMonitor 2.5.4.0 SYSTEM, ported.
-// Source of truth: netspeedmonitor_2_5_4_0_x64_setup.msi payload
-// core_dll_601_x64, reverse-engineered: the monitor calls
-// GetInterfaceInfo() (0x7A buffer-retry, 0x104 stride IP_ADAPTER_INDEX_MAP
-// loop) and samples EVERY adapter with GetIfEntry(MIB_IFROW), accumulating
-// dwInOctets / dwOutOctets deltas per ifIndex. The disassembly shows NO
-// dwOperStatus filter in the sampling loop - a disconnected adapter just
-// has frozen counters, so summing all IP interfaces never misses traffic.
-//
-// The v2.5.0 engine read 0.00 while traffic flowed because it required
-// MIB_IF_OPER_STATUS_OPERATIONAL (the active Win10/11 adapter can report
-// another status value -> nothing passed the filter), and because its 64
-// fixed state slots were never freed (adapter churn exhausted them).
-// Here: no status filter + growable state + stale slots expire.
-typedef struct { DWORD idx; ULONG64 in; ULONG64 out; int seen; int missed; } IFSTATE;
-static IFSTATE* g_if     = NULL;
+// v2.6.1 SPEED ENGINE = ORIGINAL NetSpeedMonitor 2.5.4.0 SYSTEM + NDIS6 counters.
+// Original system (reverse-engineered from MSI payload core_dll_601_x64,
+// exact semantics preserved):
+//   GetInterfaceInfo() enumerate (0x7A buffer-retry, 0x104 stride loop),
+//   GetIfEntry() per adapter, per-adapter In/Out octet deltas, anomaly ->
+//   0 + re-prime, adapter gone -> 0. No dwOperStatus filter (a disconnected
+//   adapter just has frozen counters; summing all IP interfaces never
+//   misses traffic).
+// v2.6.1 FIX (both arrows 0.00 while traffic flows): the legacy MIB_IFROW
+// 32-bit octet counters are NOT maintained by every modern Win10/11 NDIS6
+// driver - a driver that only implements ifTable2 leaves GetIfEntry's
+// dwInOctets/dwOutOctets frozen, so every delta is exactly 0 forever. The
+// engine now samples GetIfEntry2 (MIB_IF_ROW2, 64-bit InOctets/OutOctets -
+// the counters Task Manager itself uses) FIRST and falls back to the
+// legacy GetIfEntry row only when the NDIS6 call fails. One tick after a
+// counter-source flip is a re-prime (0 delta) instead of a garbage delta.
+typedef struct { DWORD idx; ULONG64 in; ULONG64 out; int seen; int missed; int src; } IFSTATE;
+static IFSTATE* g_if     = NULL;   // src: 0=priming 1=legacy GetIfEntry 2=GetIfEntry2
 static int       g_ifCap = 0;
+
+// diagnostics snapshot (Copy diagnostics reads these; display never does)
+static int    g_diagAdapters = 0;  // adapters sampled on the last tick
+static int    g_diagSrc2     = 0;  // 1 if the last tick used NDIS6 counters
+static double g_diagDown     = 0;  // raw bytes counted on the last tick
+static double g_diagUp       = 0;
 
 static ULONG64 WrapDiff(ULONG64 now, ULONG64 prev)
 {
     if (now >= prev) return now - prev;
-    return 0x100000000ULL - prev + now;      // 32-bit counter wrapped
+    return 0x100000000ULL - prev + now;      // legacy 32-bit counter wrapped
 }
 
 static void AccumulateDeltas(double* down, double* up)
@@ -347,30 +374,60 @@ static void AccumulateDeltas(double* down, double* up)
         g_if = ni; g_ifCap = cap;
     }
 
-    int i, j;
+    int i, j, n = 0, src2 = 0;
     for (i = 0; i < (int)ii->NumAdapters; ++i) {
-        MIB_IFROW row;
-        ZeroMemory(&row, sizeof(row));
-        row.dwIndex = ii->Adapter[i].Index;   // per MSDN: input = interface index
-        if (GetIfEntry(&row) != NO_ERROR) continue;
+        DWORD idx  = ii->Adapter[i].Index;
+        ULONG64 in = 0, out = 0;
+        int src = 0, type = 0;
+
+        MIB_IF_ROW2 row2;                     // NDIS6 64-bit counters first
+        ZeroMemory(&row2, sizeof(row2));
+        row2.InterfaceIndex = idx;            // per MSDN: Luid 0 -> index used
+        if (GetIfEntry2(&row2) == NO_ERROR) {
+            type = (int)row2.InterfaceType;
+            in   = row2.InOctets;
+            out  = row2.OutOctets;
+            src  = 2;
+        } else {                              // legacy fallback = original path
+            MIB_IFROW row;
+            ZeroMemory(&row, sizeof(row));
+            row.dwIndex = idx;                // per MSDN: input = interface index
+            if (GetIfEntry(&row) != NO_ERROR) continue;
+            type = (int)row.dwType;
+            in   = row.dwInOctets;
+            out  = row.dwOutOctets;
+            src  = 1;
+        }
         // defensive only - GetInterfaceInfo never lists the loopback adapter
-        if (row.dwType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        if (type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
 
         IFSTATE* st = NULL;
         for (j = 0; j < g_ifCap; ++j)
-            if (g_if[j].seen && g_if[j].idx == row.dwIndex) { st = &g_if[j]; break; }
+            if (g_if[j].seen && g_if[j].idx == idx) { st = &g_if[j]; break; }
         if (!st) {
             for (j = 0; j < g_ifCap; ++j)
                 if (!g_if[j].seen) { st = &g_if[j]; break; }
         }
         if (!st) continue;
-        ULONG64 in = row.dwInOctets, out = row.dwOutOctets;
-        if (st->seen) {
-            *down += (double)WrapDiff(in,  st->in);
-            *up   += (double)WrapDiff(out, st->out);
+        if (st->seen && st->src == src) {     // same counter base -> real delta
+            ULONG64 din, dout;
+            if (src == 2) {
+                // 64-bit counters never wrap; now < prev only when the
+                // driver reset them - the original counts 0 across an
+                // anomaly and re-primes, so we do too
+                din  = (in  >= st->in)  ? in  - st->in  : 0;
+                dout = (out >= st->out) ? out - st->out : 0;
+            } else {
+                din  = WrapDiff(in,  st->in);
+                dout = WrapDiff(out, st->out);
+            }
+            *down += (double)din;
+            *up   += (double)dout;
         }
-        st->idx = row.dwIndex; st->in = in; st->out = out;
-        st->seen = 1; st->missed = 0;
+        st->idx = idx; st->in = in; st->out = out;
+        st->seen = 1; st->missed = 0; st->src = src;
+        if (src == 2) src2 = 1;
+        ++n;
     }
     free(ii);
 
@@ -380,6 +437,9 @@ static void AccumulateDeltas(double* down, double* up)
         if (!g_if[i].seen) continue;
         if (++g_if[i].missed > 5) g_if[i].seen = 0;
     }
+
+    g_diagAdapters = n; g_diagSrc2 = src2;
+    g_diagDown = *down; g_diagUp = *up;
 }
 
 static void UpdateSpeedText(void)
@@ -795,6 +855,58 @@ static void CopyDiagToClipboard(HWND hwnd)
         (void*)g_hTaskbar, (long)rtb.left, (long)rtb.top,
         (long)rtb.right, (long)rtb.bottom,
         g_dpi, g_winW, g_winH, g_text);
+
+    // v2.6.1: live speed-engine snapshot - the exact counter layer the app
+    // is reading and every adapter's octet values right now, so a residual
+    // "0.00" report is diagnosable from this paste alone.
+    {
+        WCHAR e[300];
+        swprintf_s(e, 300,
+            L"engine=v2.6.1 ndis6=%d adaptersSampled=%d lastRawDown=%.0f lastRawUp=%.0f\r\n",
+            g_diagSrc2, g_diagAdapters, g_diagDown, g_diagUp);
+        wcscat_s(buf, 4096, e);
+        ULONG sz = 0;
+        if (GetInterfaceInfo(NULL, &sz) == ERROR_INSUFFICIENT_BUFFER && sz) {
+            PIP_INTERFACE_INFO pii = (PIP_INTERFACE_INFO)malloc(sz);
+            if (pii) {
+                if (GetInterfaceInfo(pii, &sz) == NO_ERROR) {
+                    int i;
+                    for (i = 0; i < (int)pii->NumAdapters && i < 12; ++i) {
+                        MIB_IF_ROW2 r2;
+                        ZeroMemory(&r2, sizeof(r2));
+                        r2.InterfaceIndex = pii->Adapter[i].Index;
+                        if (GetIfEntry2(&r2) == NO_ERROR) {
+                            WCHAR line[200];
+                            swprintf_s(line, 200,
+                                L"if=%lu type=%lu oper=%d in=%I64u out=%I64u src=ndis6\r\n",
+                                (unsigned long)r2.InterfaceIndex,
+                                (unsigned long)r2.InterfaceType,
+                                (int)r2.OperStatus,
+                                r2.InOctets, r2.OutOctets);
+                            wcscat_s(buf, 4096, line);
+                        } else {
+                            MIB_IFROW r1;
+                            ZeroMemory(&r1, sizeof(r1));
+                            r1.dwIndex = pii->Adapter[i].Index;
+                            if (GetIfEntry(&r1) == NO_ERROR) {
+                                WCHAR line[200];
+                                swprintf_s(line, 200,
+                                    L"if=%lu type=%lu oper=%lu in=%lu out=%lu src=legacy\r\n",
+                                    (unsigned long)r1.dwIndex,
+                                    (unsigned long)r1.dwType,
+                                    (unsigned long)r1.dwOperStatus,
+                                    (unsigned long)r1.dwInOctets,
+                                    (unsigned long)r1.dwOutOctets);
+                                wcscat_s(buf, 4096, line);
+                            }
+                        }
+                    }
+                }
+                free(pii);
+            }
+        }
+    }
+
     AppendLogTail(buf, 4096);
 
     if (!OpenClipboard(hwnd)) return;

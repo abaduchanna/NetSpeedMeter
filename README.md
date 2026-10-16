@@ -1,6 +1,34 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.6.0 — the original 2.5.4.0 measurement engine, display unchanged
+## ✅ NEW in v2.6.1 — the 0.00 bug is dead for good (NDIS6 counters), display unchanged
+
+1. **Root cause found in the counter layer, not the logic** — after the
+   v2.6.0 port of the original 2.5.4.0 engine, some machines still saw
+   `↑ 0.00 ↓ 0.00` while traffic flowed. Reason: the legacy
+   `GetIfEntry(MIB_IFROW)` 32-bit `dwInOctets` / `dwOutOctets` counters
+   are **not maintained by every modern Win10/11 NDIS6 driver**. A driver
+   that only implements `ifTable2` leaves the legacy octets frozen at
+   zero, so every per-second delta was exactly 0. The classic 2.5.4.0 was
+   built for XP/7-era NDIS5 drivers, so its own engine hits the same wall
+   on those machines.
+2. **Fix: same system, the counter layer modern drivers actually keep** —
+   the engine now samples **`GetIfEntry2` (`MIB_IF_ROW2`, 64-bit
+   `InOctets` / `OutOctets` — the exact counters Task Manager uses)
+   first** for every adapter enumerated by `GetInterfaceInfo()`, and
+   falls back to the legacy `GetIfEntry` row only if the NDIS6 call
+   fails. Delta semantics stay the original's: per-adapter octet deltas,
+   counter anomaly → 0 and re-prime, adapter gone → 0, no status filter,
+   stale slots expire after 5 missed samples.
+3. **Copy diagnostics now ends the guessing** — the clipboard report
+   includes a live engine snapshot (`ndis6` flag, adapters sampled, raw
+   bytes counted last tick) plus every adapter's index, type, oper
+   status, In/Out octets and counter source. One paste is enough to see
+   exactly what the engine sees.
+4. **Display UNCHANGED** — one row, separate `↑` / `↓` readouts (upload
+   red, download green), BYTES (capital B) and BITS (lowercase b) unit
+   families, pure-black Dark theme: identical to v2.5.0 / v2.6.0.
+
+## v2.6.0 (superseded by v2.6.1) — the original 2.5.4.0 measurement engine, display unchanged
 
 1. **Original NetSpeedMonitor 2.5.4.0 speed system, ported** — the engine
    inside this widget is now the same system that powers the classic

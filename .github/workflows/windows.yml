@@ -10,7 +10,7 @@ permissions:
 
 env:
   # 2.6.0 on tags v2.6.0, 2.6.0 on main too (single source of truth)
-  APP_VER: "2.6.0"
+  APP_VER: "2.6.1"
 
 jobs:
   build:
@@ -70,16 +70,17 @@ jobs:
           find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-${APP_VER}-x64-Setup.exe \;
           ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
-            --title "NetSpeedMeter ${GITHUB_REF_NAME} - ONE row + black background" \
+            --title "NetSpeedMeter ${GITHUB_REF_NAME} - NDIS6 speed engine, display unchanged" \
             --notes "## Downloads
 
           - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
           - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
-          ## What's new in v2.6.0
-          - **Original NetSpeedMonitor 2.5.4.0 measurement system, ported** - the speed engine is now the exact system reverse-engineered from the classic x64 MSI: GetInterfaceInfo enumeration + per-adapter GetIfEntry octet deltas (In/Out), summed over all IP interfaces, no status filter.
-          - **Fixes the 0.00 speed bug** - the previous engine required the adapter to report OPERATIONAL, which the active Win10/11 adapter can skip, leaving the readout at 0.00 while traffic flowed. The original system has no such filter, so live traffic is always counted (upload included).
-          - **Display unchanged** - one row, separate up/down readouts, both unit families (BYTES capital B / BITS lowercase b), pure black dark theme: exactly the v2.5.0 presentation.
+          ## What's new in v2.6.1
+          - **The 0.00 bug is dead for good** - the legacy GetIfEntry 32-bit octet counters are not maintained by every modern NDIS6 driver (they freeze at 0, so every delta was 0.00 even with the ported original engine). The engine now samples GetIfEntry2 first - the 64-bit In/Out octet counters Task Manager itself uses - and falls back to the legacy row only if the NDIS6 call fails.
+          - **Same original system** - per-adapter octet deltas via GetInterfaceInfo enumeration, anomaly re-prime, no status filter, exactly the 2.5.4.0 semantics, just on the counter layer modern drivers actually maintain.
+          - **Display unchanged** - one row, separate up/down readouts, both unit families (BYTES capital B / BITS lowercase b), pure black dark theme.
+          - **Copy diagnostics now dumps a live adapter snapshot** (index, type, oper status, In/Out octets, counter source) for one-paste bug reports.
 
           Right-click the tray icon (or the widget) for Units / Theme / Colored speeds / Floating mode / diagnostics." \
             NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \

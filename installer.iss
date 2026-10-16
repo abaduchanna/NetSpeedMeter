@@ -1,12 +1,12 @@
 ; NetSpeedMeter installer (Inno Setup 6) - per-user, no UAC needed
-; Build: ISCC.exe /DMyAppVersion=2.6.0 installer.iss
+; Build: ISCC.exe /DMyAppVersion=2.6.1 installer.iss
 
 #define MyAppName "NetSpeedMeter"
 #define MyAppExe "NetSpeedMonitor.exe"
 #define MyAppPublisher "3S Verse"
 #define MyAppURL "https://github.com/abaduchanna/NetSpeedMeter"
 #ifndef MyAppVersion
-#define MyAppVersion "2.6.0"
+#define MyAppVersion "2.6.1"
 #endif
 
 [Setup]
