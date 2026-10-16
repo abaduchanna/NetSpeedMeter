@@ -37,6 +37,18 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.4.0 changes (owner request 2026-10-17: "Kb/s aur Mb/s alag higa ... sath
+// nahi hoga. aur MB/s aur Mb/s main farak hai"):
+//  18. FOUR SEPARATE rows in the default units mode — row1 Mb/s, row2 Kb/s
+//      (BITS family, lowercase b), row3 MB/s, row4 KB/s (BYTES family,
+//      capital B). Bytes/bits distinction is now explicit on the widget:
+//      1 MB/s row shows capital B, the Mb/s row lowercase b, permanently.
+//      No string ever merges two unit families again.
+//  19. 4-row layout uses a compact 7pt face and a 4x-high window (still
+//      clamped to the real taskbar height so it can never overflow).
+//  20. Tooltip carries the bits row only — on-widget rows stay the single
+//      source of truth.
+//
 // v2.3.0 changes (owner request 2026-10-17: "KB/s+MB/s nikal aur alag se
 // Kb/s aur Mb/s dal, b small hai capital nahi"):
 //  15. SEPARATE LINES mode replaces the v2.2.0 mashed "Both" string — the
@@ -92,7 +104,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.3.0"
+#define APP_VERSION  L"2.4.0"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -139,6 +151,13 @@ static WCHAR  g_lineUpMb[40]   = L"\x2191 0.00 Mb/s";
 static WCHAR  g_lineDnMb[40]   = L"\x2193 0.00 Mb/s";
 static WCHAR  g_lineUpKb[40]   = L"\x2191 0.0 Kb/s";
 static WCHAR  g_lineDnKb[40]   = L"\x2193 0.0 Kb/s";
+// v2.4.0: BYTES family — separate rows, capital B (owner: "MB/s aur Mb/s main farak hai")
+static WCHAR  g_lineMB[80]     = L"\x2191 0.00 MB/s  \x2193 0.00 MB/s";
+static WCHAR  g_lineKB[80]     = L"\x2191 0.0 KB/s  \x2193 0.0 KB/s";
+static WCHAR  g_lineUpMB[40]   = L"\x2191 0.00 MB/s";
+static WCHAR  g_lineDnMB[40]   = L"\x2193 0.00 MB/s";
+static WCHAR  g_lineUpKB[40]   = L"\x2191 0.0 KB/s";
+static WCHAR  g_lineDnKB[40]   = L"\x2193 0.0 KB/s";
 static int    g_units          = 0;   // 0=auto  1=Kb/s  2=Mb/s  3=separate lines
 static int    g_theme          = 0;   // 0=auto  1=dark  2=light
 static BOOL   g_colorSpeeds    = TRUE; // up red / down green
@@ -292,14 +311,24 @@ static void UpdateSpeedText(void)
         if (down < 0 || down > 1e12) down = 0;
         if (up   < 0 || up   > 1e12) up   = 0;
         if (g_units == 3) {
-            // SEPARATE lines mode: one line Mb/s, one line Kb/s (owner rule)
+            // v2.4.0 FOUR SEPARATE rows — nothing is ever combined into one
+            // string: row1 Mb/s, row2 Kb/s (bits, lowercase b), row3 MB/s,
+            // row4 KB/s (bytes, capital B). Owner rule, final form.
             swprintf_s(g_lineUpMb, 40, L"\x2191 %.2f Mb/s", up   / (1024.0 * 1024.0));
             swprintf_s(g_lineDnMb, 40, L"\x2193 %.2f Mb/s", down / (1024.0 * 1024.0));
             swprintf_s(g_lineMb,   80, L"%s  %s", g_lineUpMb, g_lineDnMb);
             swprintf_s(g_lineUpKb, 40, L"\x2191 %.1f Kb/s", up   / 1024.0);
             swprintf_s(g_lineDnKb, 40, L"\x2193 %.1f Kb/s", down / 1024.0);
             swprintf_s(g_lineKb,   80, L"%s  %s", g_lineUpKb, g_lineDnKb);
-            swprintf_s(g_text,    160, L"%s | %s", g_lineMb, g_lineKb);
+            swprintf_s(g_lineUpMB, 40, L"\x2191 %.2f MB/s", up   / (8.0 * 1024.0 * 1024.0));
+            swprintf_s(g_lineDnMB, 40, L"\x2193 %.2f MB/s", down / (8.0 * 1024.0 * 1024.0));
+            swprintf_s(g_lineMB,   80, L"%s  %s", g_lineUpMB, g_lineDnMB);
+            swprintf_s(g_lineUpKB, 40, L"\x2191 %.1f KB/s", up   / (8.0 * 1024.0));
+            swprintf_s(g_lineDnKB, 40, L"\x2193 %.1f KB/s", down / (8.0 * 1024.0));
+            swprintf_s(g_lineKB,   80, L"%s  %s", g_lineUpKB, g_lineDnKB);
+            // tooltip shows the bits row only — the on-widget rows stay the
+            // single source of truth and are never merged
+            lstrcpynW(g_text, g_lineMb, 160);
         } else {
             WCHAR d[40], u[40];
             FormatRate(down, d, 40);
@@ -394,7 +423,11 @@ static void CreateFontForDpi(void)
 {
     DestroyFont();
     int hpt = -MulDiv(9, (int)g_dpi, 72);          // Segoe UI 9 pt
-    g_font = CreateFontW(hpt, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+    // v2.4.0: the 4-row mode needs a compact font so all four rows fit
+    // inside the taskbar height (rows are ~taskbar_h/4)
+    int hpt4 = -MulDiv(7, (int)g_dpi, 72);         // Segoe UI 7 pt rows
+    g_font = CreateFontW(g_units == 3 ? hpt4 : hpt, 0, 0, 0, FW_NORMAL,
+                         FALSE, FALSE, FALSE,
                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                          DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
@@ -405,8 +438,8 @@ static void CreateFontForDpi(void)
         SIZE sz;
         WCHAR sample[160];
         if (g_units == 3)
-            // per-line sample: Kb/s line is the wider of the two; the window
-            // is TALL enough for BOTH lines (v2.3.0 separate-lines mode)
+            // 4-row mode: window is tall enough for FOUR stacked rows; the
+            // Kb/s row is the widest of the four
             swprintf_s(sample, 160,
                 L"\x2191 8888.8 Kb/s  \x2193 8888.8 Kb/s");
         else
@@ -414,7 +447,7 @@ static void CreateFontForDpi(void)
         if (GetTextExtentPoint32W(dc, sample, (int)wcslen(sample), &sz)) {
             g_winW = sz.cx + DpiVal(14);
             if (g_units == 3)
-                g_winH = sz.cy * 2 + DpiVal(6);      // two stacked lines
+                g_winH = sz.cy * 4 + DpiVal(8);      // four stacked rows
             else
                 g_winH = sz.cy + DpiVal(4);
             if (g_winH < DpiVal(20)) g_winH = DpiVal(20);
@@ -767,13 +800,18 @@ static void OnPaint(HWND hwnd)
         HGDIOBJ of = SelectObject(mem, g_font);
         SetBkMode(mem, TRANSPARENT);
         if (g_units == 3) {
-            // SEPARATE lines (v2.3.0): Mb/s row on top, Kb/s row below
-            RECT top = rc, bot = rc;
-            int half = (rc.bottom - rc.top) / 2;
-            top.bottom    = rc.top + half - 1;
-            bot.top       = rc.top + half;
-            PaintSpeedRow(mem, top, g_lineUpMb, g_lineDnMb, g_lineMb);
-            PaintSpeedRow(mem, bot, g_lineUpKb, g_lineDnKb, g_lineKb);
+            // v2.4.0 FOUR SEPARATE rows: Mb/s, Kb/s (bits) then MB/s, KB/s
+            // (bytes). Every row is one unit family — nothing is merged.
+            RECT r1 = rc, r2 = rc, r3 = rc, r4 = rc;
+            int q = (rc.bottom - rc.top) / 4;
+            r1.bottom = rc.top + q - 1;
+            r2.top    = rc.top + q;      r2.bottom = rc.top + 2 * q - 1;
+            r3.top    = rc.top + 2 * q;  r3.bottom = rc.top + 3 * q - 1;
+            r4.top    = rc.top + 3 * q;
+            PaintSpeedRow(mem, r1, g_lineUpMb, g_lineDnMb, g_lineMb);
+            PaintSpeedRow(mem, r2, g_lineUpKb, g_lineDnKb, g_lineKb);
+            PaintSpeedRow(mem, r3, g_lineUpMB, g_lineDnMB, g_lineMB);
+            PaintSpeedRow(mem, r4, g_lineUpKB, g_lineDnKB, g_lineKB);
         } else {
             PaintSpeedRow(mem, rc, g_upText, g_downText, g_text);
         }
@@ -828,7 +866,7 @@ static void ShowContextMenu(HWND hwnd)
     if (!m) return;
 
     HMENU mu = CreatePopupMenu();          // Units
-    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_BOTH, L"Kb/s + Mb/s (separate lines)");
+    AppendMenuW(mu, MF_STRING | (g_units == 3 ? MF_CHECKED : 0), IDM_UNITS_BOTH, L"All four rows: Mb/s, Kb/s, MB/s, KB/s");
     AppendMenuW(mu, MF_STRING | (g_units == 0 ? MF_CHECKED : 0), IDM_UNITS_AUTO, L"Auto");
     AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"Kb/s");
     AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"Mb/s");
