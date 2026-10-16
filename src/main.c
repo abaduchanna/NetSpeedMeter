@@ -147,11 +147,16 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0601
-// MIB_IF_ROW2 / GetIfEntry2 live in netioapi.h, which iphlpapi.h only
-// pulls in when NTDDI_VERSION >= NTDDI_WIN6. Some SDK configurations do
-// not make that true from _WIN32_WINNT alone (v2.6.1 CI hit exactly that,
-// error C2065 'MIB_IF_ROW2'), so pin the NTDDI level and include
-// netioapi.h explicitly - both are no-ops when already configured.
+// MIB_IF_ROW2 / GetIfEntry2 live in netioapi.h - and the whole MIB_IF_ROW2
+// section there sits behind `#ifdef _WS2IPDEF_`. _WS2IPDEF_ only exists
+// after ws2ipdef.h (pulled in by winsock2.h), which WIN32_LEAN_AND_MEAN
+// deliberately keeps out of windows.h (v2.6.1 CI hit exactly this:
+// error C2065 'MIB_IF_ROW2' twice). netioapi.h itself documents it:
+// "User should include ws2ipdef.h to use these APIs." So include
+// winsock2.h FIRST (no winsock functions are used - header types only,
+// nothing extra gets linked) and let iphlpapi.h/netioapi.h follow.
+#include <winsock2.h>
+#include <ws2ipdef.h>
 #ifndef NTDDI_VERSION
 #define NTDDI_VERSION 0x06010000     // NTDDI_WIN7
 #endif
