@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 env:
-  # 2.3.0 on tags v2.3.0, 2.3.0 on main too (single source of truth)
-  APP_VER: "2.3.0"
+  # 2.5.0 on tags v2.5.0, 2.5.0 on main too (single source of truth)
+  APP_VER: "2.5.0"
 
 jobs:
   build:
@@ -70,15 +70,16 @@ jobs:
           find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-${APP_VER}-x64-Setup.exe \;
           ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
-            --title "NetSpeedMeter ${GITHUB_REF_NAME} - Both units + theme fix" \
+            --title "NetSpeedMeter ${GITHUB_REF_NAME} - four separate rows + pure black background" \
             --notes "## Downloads
 
           - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
           - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
-          ## What's new in v2.2.0
-          - **Both (KB/s + MB/s)** units mode - each direction shows both units, e.g. ↓ 1582.4 KB/s (1.54 MB/s). Both is the new default; saved Auto settings migrate to Both automatically.
-          - **Theme fix** - Auto (match taskbar) now samples the taskbar with correct client coordinates (+ screen fallback), and Dark/Light switches repaint immediately.
+          ## What's new in v2.5.0
+          - **Pure black background** - the Dark theme paints true RGB(0,0,0); saved Auto settings migrate to Dark (black). Light remains available in the menu.
+          - **Four separate speed rows** (default): Mb/s and Kb/s (bits, lowercase b) on the first two rows, MB/s and KB/s (bytes, capital B) below. No string ever merges the two families.
+          - **Theme menu simplified** to Dark (black background) / Light.
 
           Right-click the tray icon (or the widget) for Units / Theme / Colored speeds / Floating mode / diagnostics." \
             NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \

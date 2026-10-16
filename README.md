@@ -1,6 +1,25 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.3.0 — separate Kb/s + Mb/s lines, small "b" everywhere
+## ✅ NEW in v2.5.0 — pure black background + four separate rows
+
+1. **Background is now true BLACK** (`RGB(0,0,0)`) — the Dark theme no longer
+   paints the old dark-gray bar, and the `Auto (match taskbar)` sampler is
+   retired. Any saved `auto` theme migrates to Dark automatically, so after
+   upgrading the widget background is always pure black unless you
+   explicitly pick `Light` (warm white, dark text). The Theme menu is now
+   just **Dark (black background)** / **Light**.
+2. **Four separate speed rows** (introduced in v2.4.0, still the default
+   units mode): row 1 = `Mb/s`, row 2 = `Kb/s` (BITS family, lowercase b —
+   the unit ISPs advertise), row 3 = `MB/s`, row 4 = `KB/s` (BYTES family,
+   capital B — the unit browsers/OS show while downloading a file).
+   8 bits = 1 byte, so the bytes rows always equal the bits rows divided
+   by 8. No display string ever merges the two unit families, and no
+   string mixes capital-B bytes with lowercase-b bits.
+3. The window grows to four compact rows (7 pt face at standard DPI) and
+   stays clamped to the real taskbar height; the tray tooltip carries the
+   bits row.
+
+## v2.3.0 — separate Kb/s + Mb/s lines, small "b" everywhere
 
 1. **"Both" is REPLACED by "Kb/s + Mb/s (separate lines)"** — the v2.2.0
    mashed one-line format (`↓ 1582.4 KB/s (1.54 MB/s)`) is gone. The widget
@@ -32,14 +51,14 @@
 
 Downloads now come in two flavors on the [Releases](../../releases) page:
 
-- **`NetSpeedMeter-2.3.0-x64-Setup.exe`** (recommended) — proper installer:
+- **`NetSpeedMeter-2.5.0-x64-Setup.exe`** (recommended) — proper installer:
   per-user install to `%LOCALAPPDATA%\NetSpeedMeter` (**no admin/UAC**),
   Start Menu shortcut, optional Desktop shortcut, optional
   **start-with-Windows** checkbox (writes the HKCU Run value for you), and a
   clean uninstaller (your speed settings are kept). App code is unchanged
   from v2.1.0 — same exe, same features, now with Explorer file-properties
-  version info (2.3.0.0).
-- **`NetSpeedMonitor-v2.3.0-x64.exe`** — the classic portable single exe,
+  version info (2.5.0.0).
+- **`NetSpeedMonitor-v2.5.0-x64.exe`** — the classic portable single exe,
   as before.
 
 ## v2.1.0 — Units menu, Theme menu, colored speeds (up RED, down GREEN)
@@ -155,9 +174,9 @@ application that embeds into the taskbar using the same technique as
 
 **Install / run**
 
-1. Download `NetSpeedMeter-2.3.0-x64-Setup.exe` from
+1. Download `NetSpeedMeter-2.5.0-x64-Setup.exe` from
    [Releases](../../releases) and run it — that's it. (Prefer portable?
-   Grab `NetSpeedMonitor-v2.3.0-x64.exe` instead and skip to step 3.)
+   Grab `NetSpeedMonitor-v2.5.0-x64.exe` instead and skip to step 3.)
 2. The installer adds a Start Menu shortcut and, if you tick the box, the
    start-with-Windows entry — no admin rights needed at any point.
 3. Run it — the speed display appears in the taskbar, just left of the clock

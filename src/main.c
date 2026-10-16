@@ -37,6 +37,15 @@
 //      plus the log tail on the clipboard for one-paste bug reports.
 //   9. 60-second heartbeat line in log.txt with the full window state.
 //
+// v2.5.0 changes (owner request 2026-10-17: "mujhe MB/s separate aur KB/s
+// separate chahiye attached wala nahi hona chahiye ... aur bg black"):
+//  21. PURE BLACK background: the Dark theme now paints RGB(0,0,0) (was
+//      RGB(24,24,28) dark gray) and "Auto (match taskbar)" is retired — any
+//      saved "auto" migrates to Dark, so the widget background is always
+//      true black unless the user explicitly picks Light.
+//  22. Theme menu reduced to "Dark (black background)" / "Light"; the
+//      startup default is Dark = black.
+//
 // v2.4.0 changes (owner request 2026-10-17: "Kb/s aur Mb/s alag higa ... sath
 // nahi hoga. aur MB/s aur Mb/s main farak hai"):
 //  18. FOUR SEPARATE rows in the default units mode — row1 Mb/s, row2 Kb/s
@@ -104,7 +113,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"2.4.0"
+#define APP_VERSION  L"2.5.0"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TIMER_TICK   1          // 1000 ms update + reposition timer
@@ -138,7 +147,7 @@ static int    g_winH           = 0;
 static BOOL   g_embedded       = FALSE;  // SetParent succeeded
 static BOOL   g_floatMode      = FALSE;  // user-forced floating bar mode
 static int    g_fallbackTries  = 0;
-static COLORREF g_bgColor      = RGB(32, 32, 32);
+static COLORREF g_bgColor      = RGB(0, 0, 0);     // v2.5.0: pure black
 static COLORREF g_textColor    = RGB(240, 240, 240);
 static COLORREF g_upColor      = RGB(255, 112, 100);   // upload RED
 static COLORREF g_downColor    = RGB(110, 231, 133);   // download GREEN
@@ -159,7 +168,7 @@ static WCHAR  g_lineDnMB[40]   = L"\x2193 0.00 MB/s";
 static WCHAR  g_lineUpKB[40]   = L"\x2191 0.0 KB/s";
 static WCHAR  g_lineDnKB[40]   = L"\x2193 0.0 KB/s";
 static int    g_units          = 0;   // 0=auto  1=Kb/s  2=Mb/s  3=separate lines
-static int    g_theme          = 0;   // 0=auto  1=dark  2=light
+static int    g_theme          = 1;   // 1=dark (black bg, default) 2=light; legacy 0=auto -> dark
 static BOOL   g_colorSpeeds    = TRUE; // up red / down green
 static int    g_colorTick      = 0;
 static int    g_trayTick       = 0;
@@ -341,52 +350,10 @@ static void UpdateSpeedText(void)
     g_lastTick = now;
 }
 
-// ------------------------------------------------------------- taskbar
-// Sample the taskbar's rendered background so our solid fill is seamless
-// (theme = Auto only). Sets the background color; text/arrow colors are
-// derived from background luminance in DeriveArrowColors().
-// v2.2.0: coordinates are CLIENT-relative (the v2.1.x code passed screen
-// coordinates into the client DC, so GetPixel always failed and Auto kept
-// the startup color forever). Falls back to sampling the composited screen
-// when the taskbar DC returns nothing (XAML-composited taskbars).
-static void SampleTaskbarColor(void)
-{
-    RECT rb;
-    if (!g_hTaskbar || !GetWindowRect(g_hTaskbar, &rb)) return;
-    {
-        int sx = 0, sy = 2;
-        COLORREF c = CLR_INVALID;
-        HWND hN = FindWindowExW(g_hTaskbar, NULL, L"TrayNotifyWnd", NULL);
-        if (hN) {
-            RECT rn;
-            POINT tl;
-            if (GetWindowRect(hN, &rn)) {
-                tl.x = rn.left; tl.y = rn.top;
-                ScreenToClient(g_hTaskbar, &tl);
-                sx = tl.x - DpiVal(30);
-                if (sx < 0) sx = 0;
-            }
-        } else {
-            RECT rc;
-            if (GetClientRect(g_hTaskbar, &rc)) sx = rc.right - DpiVal(40);
-        }
-        {
-            HDC dc = GetDC(g_hTaskbar);
-            if (dc) {
-                c = GetPixel(dc, sx, sy);
-                ReleaseDC(g_hTaskbar, dc);
-            }
-        }
-        if (c == CLR_INVALID) {
-            HDC sdc = GetDC(NULL);
-            if (sdc) {
-                c = GetPixel(sdc, rb.right - DpiVal(120), rb.top + DpiVal(8));
-                ReleaseDC(NULL, sdc);
-            }
-        }
-        if (c != CLR_INVALID) g_bgColor = c;
-    }
-}
+// ------------------------------------------------------ theme colors
+// v2.5.0: taskbar pixel-sampling was REMOVED — the widget background is
+// pure black (Dark, default) or warm white (Light). Text and arrow colors
+// are derived from the background luminance in DeriveArrowColors().
 
 // Text + arrow colors from the background luminance. Dark backgrounds get
 // bright arrows, light backgrounds get dark arrows (always readable).
@@ -405,12 +372,13 @@ static void DeriveArrowColors(void)
     }
 }
 
-// Apply the selected theme (g_theme: 0=auto 1=dark 2=light).
+// Apply the selected theme. v2.5.0: g_theme 1=dark paints PURE BLACK
+// (owner: "aur bg black"), 2=light paints warm white; legacy 0=auto is
+// treated as dark so every saved setting lands on the black background.
 static void ApplyTheme(void)
 {
-    if (g_theme == 1)      g_bgColor = RGB(24, 24, 28);
-    else if (g_theme == 2) g_bgColor = RGB(243, 243, 243);
-    else                   SampleTaskbarColor();
+    if (g_theme == 2)      g_bgColor = RGB(243, 243, 243);
+    else                   g_bgColor = RGB(0, 0, 0);   // v2.5.0: pure black
     DeriveArrowColors();
 }
 
@@ -518,9 +486,8 @@ static void LoadSettings(void)
         cb = sizeof(v);
         if (RegQueryValueExW(k, L"Theme", NULL, &type, (BYTE*)v, &cb) == ERROR_SUCCESS
             && type == REG_SZ) {
-            if (lstrcmpiW(v, L"dark") == 0) g_theme = 1;
-            else if (lstrcmpiW(v, L"light") == 0) g_theme = 2;
-            else g_theme = 0;
+            if (lstrcmpiW(v, L"light") == 0) g_theme = 2;
+            else g_theme = 1;   // v2.5.0: "dark" and legacy "auto" -> black
         }
         DWORD dw = 0, cbd = sizeof(DWORD);
         if (RegQueryValueExW(k, L"Colored", NULL, &type, (BYTE*)&dw, &cbd) == ERROR_SUCCESS
@@ -543,7 +510,7 @@ static void SaveSettings(void)
                              (g_units == 3) ? L"sep" : L"auto";
         RegSetValueExW(k, L"Units", 0, REG_SZ, (const BYTE*)units,
                        (DWORD)((lstrlenW(units) + 1) * sizeof(WCHAR)));
-        const WCHAR* theme = (g_theme == 1) ? L"dark" : (g_theme == 2) ? L"light" : L"auto";
+        const WCHAR* theme = (g_theme == 2) ? L"light" : L"dark";   // v2.5.0: "auto" retired
         RegSetValueExW(k, L"Theme", 0, REG_SZ, (const BYTE*)theme,
                        (DWORD)((lstrlenW(theme) + 1) * sizeof(WCHAR)));
         DWORD colored = g_colorSpeeds ? 1 : 0;
@@ -871,9 +838,8 @@ static void ShowContextMenu(HWND hwnd)
     AppendMenuW(mu, MF_STRING | (g_units == 1 ? MF_CHECKED : 0), IDM_UNITS_KB,   L"Kb/s");
     AppendMenuW(mu, MF_STRING | (g_units == 2 ? MF_CHECKED : 0), IDM_UNITS_MB,   L"Mb/s");
 
-    HMENU mt = CreatePopupMenu();          // Theme
-    AppendMenuW(mt, MF_STRING | (g_theme == 0 ? MF_CHECKED : 0), IDM_THEME_AUTO, L"Auto (match taskbar)");
-    AppendMenuW(mt, MF_STRING | (g_theme == 1 ? MF_CHECKED : 0), IDM_THEME_DARK, L"Dark");
+    HMENU mt = CreatePopupMenu();          // Theme (v2.5.0: black or light)
+    AppendMenuW(mt, MF_STRING | (g_theme != 2 ? MF_CHECKED : 0), IDM_THEME_DARK, L"Dark (black background)");
     AppendMenuW(mt, MF_STRING | (g_theme == 2 ? MF_CHECKED : 0), IDM_THEME_LITE, L"Light");
 
     AppendMenuW(m, MF_POPUP, (UINT_PTR)mu, L"&Units");
@@ -927,10 +893,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (++g_colorTick >= 5) {
             g_colorTick = 0;
-            if (g_theme == 0) {          // auto theme re-samples the taskbar
-                ApplyTheme();
-            }
-            TrayUpdateTip();
+            TrayUpdateTip();             // v2.5.0: theme is deterministic, no re-sampling
         }
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
@@ -983,11 +946,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RecalcAndPosition();
             InvalidateRect(hwnd, NULL, FALSE);
             break;
-        case IDM_THEME_AUTO:
+        case IDM_THEME_AUTO:                 // legacy id — lands on dark/black
         case IDM_THEME_DARK:
         case IDM_THEME_LITE:
-            g_theme = (LOWORD(wp) == IDM_THEME_DARK) ? 1 :
-                      (LOWORD(wp) == IDM_THEME_LITE) ? 2 : 0;
+            g_theme = (LOWORD(wp) == IDM_THEME_LITE) ? 2 : 1;
             ApplyTheme();
             SaveSettings();
             // v2.2.0: repaint IMMEDIATELY (the v2.1.x toggle only posted an
