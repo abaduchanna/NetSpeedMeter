@@ -70,16 +70,16 @@ jobs:
           find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-${APP_VER}-x64-Setup.exe \;
           ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
-            --title "NetSpeedMeter ${GITHUB_REF_NAME} - four separate rows + pure black background" \
+            --title "NetSpeedMeter ${GITHUB_REF_NAME} - ONE row + black background" \
             --notes "## Downloads
 
           - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
           - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
           ## What's new in v2.5.0
-          - **Pure black background** - the Dark theme paints true RGB(0,0,0); saved Auto settings migrate to Dark (black). Light remains available in the menu.
-          - **Four separate speed rows** (default): Mb/s and Kb/s (bits, lowercase b) on the first two rows, MB/s and KB/s (bytes, capital B) below. No string ever merges the two families.
-          - **Theme menu simplified** to Dark (black background) / Light.
+          - **ONE row** - the stacked four-row layout is gone. Every units mode draws a single taskbar-height row; upload and download stay separate readouts (own arrow, own color), never attached, never stacked.
+          - **Units menu: both families, one row each** - BYTES (capital B): Auto (B/s, KB/s, MB/s), KB/s, MB/s - and BITS (lowercase b): Auto (b/s, Kb/s, Mb/s), Kb/s, Mb/s. 8 bits = 1 byte (KB/s = Kb/s / 8, MB/s = Mb/s / 8). Default = BYTES Auto.
+          - **Black background** - Dark theme now uses pure black and is the default (Auto match-taskbar and Light remain available).
 
           Right-click the tray icon (or the widget) for Units / Theme / Colored speeds / Floating mode / diagnostics." \
             NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \
