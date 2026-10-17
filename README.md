@@ -1,6 +1,51 @@
 # NetSpeedMeter — NetSpeedMonitor for Windows 10 / 11
 
-## ✅ NEW in v2.6.1 — the 0.00 bug is dead for good (NDIS6 counters), display unchanged
+## v3.0.0 — the ORIGINAL NetSpeedMonitor 2.5.4.0, rebuilt from the MSI
+
+Owner directive: "mujhe original NSM bana kar de msi se" — so v3.0.0 drops
+the v2.x custom widget entirely and rebuilds the ORIGINAL 2.5.4.0, reverse-
+engineered from the official x64 MSI payload (`core_dll_601_x64`):
+
+- **Original display** — `Sent: 12.34 kB/s  Recv: 145.67 kB/s`: one row,
+  taskbar-native colors (no black box, no theme menu). Labels, order,
+  font and precision are the original's: `layout.textsent` / `layout.textrecv`
+  (defaults `Sent:` / `Recv:` — the exact strings found in the binary),
+  `layout.changeorder`, `layout.font` / `layout.size` / `layout.color`,
+  `core.precision` (`%.0f`..`%.3f`).
+- **Original units** — `kB/s` (1000-based), `KiB/s` (1024-based), `MB/s`,
+  `MiB/s`: the four unit strings in the original DLL, selected by
+  `core.bitrate` (Auto default).
+- **Original engine** — `GetInterfaceInfo()` enumeration + per-adapter
+  octet deltas via `GetIfEntry`, no status filter (T196 disassembly of the
+  original). The counter LAYER is the working one from v2.6.1
+  (`GetIfEntry2` 64-bit octets first, legacy row as fallback) because the
+  original's own 32-bit counters are frozen by modern NDIS6 drivers —
+  that modernization is the only intentional deviation; it is what killed
+  the `0.00` bug.
+- **Original menu** — Monitoring On/Off, Data Traffic, Reset Session,
+  Traffic Import Wizard, Traffic Export Wizard, NetSpeedMonitor Website,
+  Settings, Enable Toolbar Tooltip, Exit (all original strings).
+- **Settings dialog** — the original configuration UI: interface picker,
+  unit + precision, Sent/Recv label texts, order swap, font picker, text
+  color (+ automatic taskbar match), toolbar tooltip, Start with Windows.
+- **Data Traffic window** — Session / Today / Month / Total × Sent / Recv,
+  the original `System Uptime: %d Days %02d:%02d:%02d` line, daily history
+  list, 14-day bar graph, CSV import/export (the original wizards), Reset
+  Session, Clear Database. Daily log file at the original's SQLite path
+  (`%LOCALAPPDATA%\NetSpeedMonitor\traffic.db`) — a real SQLite file left
+  by the original is detected and never overwritten.
+- **Original registry schema** — `core.monitoring`, `core.interface`,
+  `core.bitrate`, `core.precision`, `layout.*` under
+  `HKCU\Software\NetSpeedMonitor`; legacy v2.x values migrate.
+- **Taskbar hosting** — the original was a DeskBand COM object; Microsoft
+  removed taskbar toolbands on Windows 11, so the same text is hosted in
+  the taskbar via the SetParent technique (works on Win10 and Win11) with
+  a floating topmost fallback.
+
+The v2.x looks (black widget, colored rows, units menus) are gone by
+design — this build is the original.
+
+## v2.6.1 (superseded by v3.0.0) — the 0.00 bug is dead for good (NDIS6 counters), display unchanged
 
 1. **Root cause found in the counter layer, not the logic** — after the
    v2.6.0 port of the original 2.5.4.0 engine, some machines still saw

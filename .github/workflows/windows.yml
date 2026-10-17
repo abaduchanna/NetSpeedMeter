@@ -9,8 +9,8 @@ permissions:
   contents: write
 
 env:
-  # 2.6.0 on tags v2.6.0, 2.6.0 on main too (single source of truth)
-  APP_VER: "2.6.1"
+  # single source of truth: tags vX.Y.Z and main both build this version
+  APP_VER: "3.0.0"
 
 jobs:
   build:
@@ -28,7 +28,8 @@ jobs:
           rc /nologo icon.rc
           cl /nologo /O2 /W3 /DUNICODE /D_UNICODE main.c icon.res ^
             /Fe:NetSpeedMonitor.exe ^
-            /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib
+            /link /SUBSYSTEM:WINDOWS user32.lib gdi32.lib shell32.lib advapi32.lib iphlpapi.lib ^
+            comctl32.lib comdlg32.lib
           dir NetSpeedMonitor.exe
 
       - name: Smoke test (must stay alive 8s)
@@ -70,19 +71,23 @@ jobs:
           find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-${APP_VER}-x64-Setup.exe \;
           ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
-            --title "NetSpeedMeter ${GITHUB_REF_NAME} - NDIS6 speed engine, display unchanged" \
+            --title "NetSpeedMonitor ${GITHUB_REF_NAME} - ORIGINAL 2.5.4.0 rebuild" \
             --notes "## Downloads
 
           - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
           - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
-          ## What's new in v2.6.1
-          - **The 0.00 bug is dead for good** - the legacy GetIfEntry 32-bit octet counters are not maintained by every modern NDIS6 driver (they freeze at 0, so every delta was 0.00 even with the ported original engine). The engine now samples GetIfEntry2 first - the 64-bit In/Out octet counters Task Manager itself uses - and falls back to the legacy row only if the NDIS6 call fails.
-          - **Same original system** - per-adapter octet deltas via GetInterfaceInfo enumeration, anomaly re-prime, no status filter, exactly the 2.5.4.0 semantics, just on the counter layer modern drivers actually maintain.
-          - **Display unchanged** - one row, separate up/down readouts, both unit families (BYTES capital B / BITS lowercase b), pure black dark theme.
-          - **Copy diagnostics now dumps a live adapter snapshot** (index, type, oper status, In/Out octets, counter source) for one-paste bug reports.
+          ## What is v${APP_VER}
+          A faithful rebuild of the ORIGINAL NetSpeedMonitor 2.5.4.0, reverse-engineered from the official MSI payload (core_dll_601_x64):
 
-          Right-click the tray icon (or the widget) for Units / Theme / Colored speeds / Floating mode / diagnostics." \
+          - **Original display**: 'Sent: 12.34 kB/s  Recv: 145.67 kB/s' - one row, taskbar-native colors, configurable Sent/Recv labels and order (layout.textsent / layout.textrecv / layout.changeorder).
+          - **Original units and precision**: kB/s (1000), KiB/s (1024), MB/s, MiB/s + %.0f..%.3f precision - the exact unit strings and core.precision key of the original binary.
+          - **Original menu**: Monitoring On/Off, Data Traffic, Reset Session, Traffic Import/Export Wizard, NetSpeedMonitor Website, Settings, Enable Toolbar Tooltip, Exit.
+          - **Settings dialog** (the original configuration UI): interface picker, unit/precision, Sent/Recv texts, swap order, font, text color, tooltip, autostart.
+          - **Data Traffic window**: Session / Today / Month / Total x Sent / Recv, 'System Uptime: %d Days %02d:%02d:%02d', daily history list, 14-day bar graph, CSV import/export, Clear Database. Daily log file instead of SQLite (same information, same path).
+          - **Original registry schema**: core.monitoring, core.interface, core.bitrate, core.precision, layout.* under HKCU\\\\Software\\\\NetSpeedMonitor (v2.x values migrate automatically).
+          - **Engine**: the original GetInterfaceInfo + per-adapter octet-delta system with the working counter layer (GetIfEntry2 first, legacy GetIfEntry fallback) - the counter fix that killed the 0.00 bug is kept, everything else is the 2.5.4.0 semantics.
+          - **Taskbar hosting**: the original was a DeskBand COM object, which Windows 11 removed; this rebuild hosts the same text in the taskbar via the SetParent technique (works on Windows 10 and 11), with a floating topmost fallback." \
             NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \
           gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe --clobber
         env:
