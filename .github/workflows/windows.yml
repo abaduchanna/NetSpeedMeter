@@ -10,7 +10,7 @@ permissions:
 
 env:
   # single source of truth: tags vX.Y.Z and main both build this version
-  APP_VER: "3.0.0"
+  APP_VER: "3.0.1"
 
 jobs:
   build:

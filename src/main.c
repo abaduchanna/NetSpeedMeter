@@ -84,7 +84,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.0"
+#define APP_VERSION  L"3.0.1"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
@@ -608,33 +608,29 @@ static void SampleTaskbarColor(void)
     RECT rb;
     if (!g_hTaskbar || !GetWindowRect(g_hTaskbar, &rb)) return;
     {
-        int sx = 0, sy = 2;
+        int sx = rb.right - DpiVal(120);
+        int sy = rb.top + (rb.bottom - rb.top) / 2;
         COLORREF c = CLR_INVALID;
         HWND hN = FindWindowExW(g_hTaskbar, NULL, L"TrayNotifyWnd", NULL);
         if (hN) {
             RECT rn;
-            POINT tl;
             if (GetWindowRect(hN, &rn)) {
-                tl.x = rn.left; tl.y = rn.top;
-                ScreenToClient(g_hTaskbar, &tl);
-                sx = tl.x - DpiVal(30);
-                if (sx < 0) sx = 0;
+                sx = rn.left + DpiVal(8);
+                sy = rn.top + (rn.bottom - rn.top) / 2;
             }
-        } else {
-            RECT rc;
-            if (GetClientRect(g_hTaskbar, &rc)) sx = rc.right - DpiVal(40);
         }
         {
-            HDC dc = GetDC(g_hTaskbar);
+            HDC dc = GetDC(NULL);
             if (dc) {
                 c = GetPixel(dc, sx, sy);
-                ReleaseDC(g_hTaskbar, dc);
+                ReleaseDC(NULL, dc);
             }
         }
         if (c == CLR_INVALID) {
             HDC sdc = GetDC(NULL);
             if (sdc) {
-                c = GetPixel(sdc, rb.right - DpiVal(120), rb.top + DpiVal(8));
+                c = GetPixel(sdc, rb.right - DpiVal(120),
+                             rb.top + (rb.bottom - rb.top) / 2);
                 ReleaseDC(NULL, sdc);
             }
         }
@@ -658,6 +654,28 @@ static void DeriveColors(void)
     }
 }
 
+static int ClampColor(int value)
+{
+    if (value < 0) return 0;
+    if (value > 255) return 255;
+    return value;
+}
+
+static COLORREF ShiftColor(COLORREF color, int amount)
+{
+    return RGB(ClampColor((int)GetRValue(color) + amount),
+               ClampColor((int)GetGValue(color) + amount),
+               ClampColor((int)GetBValue(color) + amount));
+}
+
+static COLORREF BlendColor(COLORREF foreground, COLORREF background, int percent)
+{
+    int inverse = 100 - percent;
+    return RGB((GetRValue(foreground) * percent + GetRValue(background) * inverse) / 100,
+               (GetGValue(foreground) * percent + GetGValue(background) * inverse) / 100,
+               (GetBValue(foreground) * percent + GetBValue(background) * inverse) / 100);
+}
+
 static void ApplyColors(void)
 {
     SampleTaskbarColor();          // background always matches the taskbar
@@ -675,7 +693,7 @@ static void CreateFontForDpi(void)
 {
     DestroyFont();
     int hpt = -MulDiv(g_fontSize > 0 ? g_fontSize : 9, (int)g_dpi, 72);
-    g_font = CreateFontW(hpt, 0, 0, 0, FW_NORMAL,
+    g_font = CreateFontW(hpt, 0, 0, 0, FW_SEMIBOLD,
                          FALSE, FALSE, FALSE,
                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                          CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -686,16 +704,16 @@ static void CreateFontForDpi(void)
         SIZE sz;
         WCHAR sample[160];
         swprintf_s(sample, 160,
-            L"%s 888.88 MiB/s  %s 888.88 MiB/s", g_lblSent, g_lblRecv);
+            L"%s 888.88 MB/s  %s 888.88 MB/s", g_lblSent, g_lblRecv);
         if (GetTextExtentPoint32W(dc, sample, (int)wcslen(sample), &sz)) {
-            g_winW = sz.cx + DpiVal(12);
-            g_winH = sz.cy + DpiVal(4);
-            if (g_winH < DpiVal(20)) g_winH = DpiVal(20);
+            g_winW = sz.cx + DpiVal(34);
+            g_winH = sz.cy + DpiVal(10);
+            if (g_winH < DpiVal(26)) g_winH = DpiVal(26);
         }
         SelectObject(dc, old);
         ReleaseDC(g_hwnd, dc);
     }
-    if (g_winW <= 0) { g_winW = DpiVal(240); g_winH = DpiVal(24); }
+    if (g_winW <= 0) { g_winW = DpiVal(250); g_winH = DpiVal(28); }
     g_listFont = CreateFontW(-MulDiv(9, (int)g_dpi, 72), 0, 0, 0, FW_NORMAL,
                              FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -957,34 +975,37 @@ static void RecalcAndPosition(void)
     if (tw <= 0 || th <= 0) return;
 
     int notifyLeft = -1;
+    int notifyTop = -1;
+    int notifyHeight = 0;
     HWND hN = FindWindowExW(g_hTaskbar, NULL, L"TrayNotifyWnd", NULL);
     if (hN) {
         RECT rn;
         if (GetWindowRect(hN, &rn)) {
-            POINT org = { rb.left, rb.top };
-            ScreenToClient(g_hTaskbar, &org);
-            notifyLeft = rn.left - org.x;
+            notifyLeft = rn.left - rb.left;
             if (notifyLeft <= 0 || notifyLeft > tw) notifyLeft = -1;
+            notifyTop = rn.top - rb.top;
+            notifyHeight = rn.bottom - rn.top;
+            if (notifyTop < 0 || notifyTop >= th || notifyHeight <= 0) {
+                notifyTop = -1;
+                notifyHeight = 0;
+            }
         }
     }
 
     int useH = g_winH;
-    if (useH > th) useH = th - 2;
+    if (notifyHeight > 0 && useH > notifyHeight - DpiVal(4))
+        useH = notifyHeight - DpiVal(4);
+    else if (useH > th)
+        useH = th - DpiVal(4);
     if (useH < DpiVal(16)) useH = DpiVal(16);
 
-    int y = (th - useH) / 2;
-    HWND hS = FindWindowExW(g_hTaskbar, NULL, L"Start", NULL);
-    if (hS) {
-        RECT rs;
-        if (GetWindowRect(hS, &rs)) {
-            int sh = rs.bottom - rs.top;
-            if (sh > 0 && sh <= th) y = (sh - useH) / 2 + (th - sh);
-        }
-    }
+    int y = (notifyTop >= 0)
+        ? notifyTop + (notifyHeight - useH) / 2
+        : (th - useH) / 2;
 
     int x;
-    if (notifyLeft > 0) x = notifyLeft - g_winW - DpiVal(2);
-    else                x = tw - g_winW - DpiVal(88) - DpiVal(2);
+    if (notifyLeft > 0) x = notifyLeft - g_winW - DpiVal(6);
+    else                x = tw - g_winW - DpiVal(88) - DpiVal(6);
     if (x < DpiVal(2)) x = DpiVal(2);
 
     SetWindowPos(me, NULL, x, y, g_winW, useH,
@@ -1022,37 +1043,54 @@ static void PaintSpeedRow(HDC dc, RECT rc,
                           const WCHAR* p3, const WCHAR* p4,
                           const WCHAR* joined)
 {
+    SIZE s1, s2, s3, s4;
+    int labelGap = DpiVal(3);
+    int groupGap = DpiVal(10);
+    int sepGap = DpiVal(9);
+    int sepWidth = DpiVal(1);
+    int total, x;
+    RECT r;
+    COLORREF labelColor = BlendColor(g_textColor, g_bgColor, 78);
+    COLORREF c1 = g_colorSpeeds ? (g_swapOrder ? g_downColor : g_upColor) : g_textColor;
+    COLORREF c2 = g_colorSpeeds ? (g_swapOrder ? g_upColor : g_downColor) : g_textColor;
+    HPEN sepPen;
+
+    (void)joined;
     SetBkMode(dc, TRANSPARENT);
-    if (g_colorSpeeds) {
-        // p1=lbl1 p2=val1 p3=lbl2 p4=val2 (sent red / recv green)
-        COLORREF c1 = g_swapOrder ? g_downColor : g_upColor;
-        COLORREF c2 = g_swapOrder ? g_upColor   : g_downColor;
-        SIZE s1, s2, s3, s4;
-        GetTextExtentPoint32W(dc, p1, (int)wcslen(p1), &s1);
-        GetTextExtentPoint32W(dc, p2, (int)wcslen(p2), &s2);
-        GetTextExtentPoint32W(dc, p3, (int)wcslen(p3), &s3);
-        GetTextExtentPoint32W(dc, p4, (int)wcslen(p4), &s4);
-        int total = s1.cx + s2.cx + s3.cx + s4.cx + DpiVal(4);
-        int x0 = (rc.left + rc.right - total) / 2;
-        if (x0 < rc.left) x0 = rc.left;
-        RECT r; int x = x0;
-        #define DRAW_SEG(txt, col, szx) { \
-            r.left = x; r.top = rc.top; r.right = x + (szx); r.bottom = rc.bottom; \
-            SetTextColor(dc, (col)); \
-            DrawTextW(dc, txt, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS); \
-            x += (szx); }
-        DRAW_SEG(p1, c1, s1.cx)
-        DRAW_SEG(p2, c1, s2.cx)
-        DRAW_SEG(L"  ", g_textColor, DpiVal(4))
-        DRAW_SEG(p3, c2, s3.cx)
-        DRAW_SEG(p4, c2, s4.cx)
-        #undef DRAW_SEG
-        (void)s3; (void)s4;
-    } else {
-        SetTextColor(dc, g_textColor);
-        DrawTextW(dc, joined, -1, &rc,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    GetTextExtentPoint32W(dc, p1, (int)wcslen(p1), &s1);
+    GetTextExtentPoint32W(dc, p2, (int)wcslen(p2), &s2);
+    GetTextExtentPoint32W(dc, p3, (int)wcslen(p3), &s3);
+    GetTextExtentPoint32W(dc, p4, (int)wcslen(p4), &s4);
+    total = s1.cx + labelGap + s2.cx + groupGap + sepWidth + sepGap +
+            s3.cx + labelGap + s4.cx;
+    x = (rc.left + rc.right - total) / 2;
+    if (x < rc.left) x = rc.left;
+
+    #define DRAW_SEG(txt, col, width) { \
+        r.left = x; r.top = rc.top; r.right = x + (width); r.bottom = rc.bottom; \
+        SetTextColor(dc, (col)); \
+        DrawTextW(dc, txt, -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS); \
+        x += (width); }
+    DRAW_SEG(p1, labelColor, s1.cx)
+    x += labelGap;
+    DRAW_SEG(p2, c1, s2.cx)
+    x += groupGap;
+
+    sepPen = CreatePen(PS_SOLID, sepWidth,
+                       BlendColor(g_textColor, g_bgColor, 28));
+    if (sepPen) {
+        HGDIOBJ oldPen = SelectObject(dc, sepPen);
+        int mid = (rc.top + rc.bottom) / 2;
+        MoveToEx(dc, x, mid - DpiVal(6), NULL);
+        LineTo(dc, x, mid + DpiVal(6));
+        SelectObject(dc, oldPen);
+        DeleteObject(sepPen);
     }
+    x += sepWidth + sepGap;
+    DRAW_SEG(p3, labelColor, s3.cx)
+    x += labelGap;
+    DRAW_SEG(p4, c2, s4.cx)
+    #undef DRAW_SEG
 }
 
 static void OnPaint(HWND hwnd)
@@ -1072,8 +1110,33 @@ static void OnPaint(HWND hwnd)
     SelectObject(mem, obr);
     DeleteObject(bg);
 
+    {
+        int lum = ((int)GetRValue(g_bgColor) * 299 +
+                   (int)GetGValue(g_bgColor) * 587 +
+                   (int)GetBValue(g_bgColor) * 114) / 1000;
+        COLORREF panelColor = ShiftColor(g_bgColor, lum > 128 ? -9 : 13);
+        COLORREF borderColor = ShiftColor(g_bgColor, lum > 128 ? -24 : 30);
+        RECT panel = rc;
+        HBRUSH panelBrush;
+        HPEN borderPen;
+        HGDIOBJ oldBrush, oldPen;
+        InflateRect(&panel, -DpiVal(1), -DpiVal(2));
+        panelBrush = CreateSolidBrush(panelColor);
+        borderPen = CreatePen(PS_SOLID, DpiVal(1), borderColor);
+        oldBrush = SelectObject(mem, panelBrush);
+        oldPen = SelectObject(mem, borderPen);
+        RoundRect(mem, panel.left, panel.top, panel.right, panel.bottom,
+                  DpiVal(7), DpiVal(7));
+        SelectObject(mem, oldPen);
+        SelectObject(mem, oldBrush);
+        DeleteObject(borderPen);
+        DeleteObject(panelBrush);
+    }
+
     if (g_font) {
         HGDIOBJ of = SelectObject(mem, g_font);
+        RECT textRc = rc;
+        InflateRect(&textRc, -DpiVal(9), -DpiVal(2));
         // draw as four segments so colored mode can color them separately
         WCHAR t1[80], t2[80], t3[80], t4[80];
         if (g_swapOrder) {
@@ -1083,7 +1146,7 @@ static void OnPaint(HWND hwnd)
             lstrcpynW(t1, g_lblSent, 80); lstrcpynW(t2, g_sentPart + lstrlenW(g_lblSent) + 1, 80);
             lstrcpynW(t3, g_lblRecv, 80); lstrcpynW(t4, g_recvPart + lstrlenW(g_lblRecv) + 1, 80);
         }
-        PaintSpeedRow(mem, rc, t1, t2, t3, t4, g_text);
+        PaintSpeedRow(mem, textRc, t1, t2, t3, t4, g_text);
         SelectObject(mem, of);
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);

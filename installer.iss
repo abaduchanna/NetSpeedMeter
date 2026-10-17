@@ -1,5 +1,5 @@
 ; NetSpeedMonitor installer (Inno Setup 6) - per-user, no UAC needed
-; Build: ISCC.exe /DMyAppVersion=2.6.1 installer.iss
+; Build: ISCC.exe /DMyAppVersion=3.0.1 installer.iss
 
 #define MyAppName "NetSpeedMonitor"
 #define MyAppExe "NetSpeedMonitor.exe"
