@@ -2,6 +2,10 @@
 
 NetSpeedMonitor displays the current sent and received network speed in the Windows taskbar.
 
+---
+
+**NetSpeedMeter** is part of the [3SVerse](https://3sverse.com) suite — software, systems & operations for wireless dealers and beyond. More free tools at [3sverse.com](https://3sverse.com).
+
 ## Features
 
 - Shows live `Sent` and `Recv` transfer rates in one taskbar row.
