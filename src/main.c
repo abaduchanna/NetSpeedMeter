@@ -1617,9 +1617,9 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wp, LPARAM l
                             ZeroMemory(&r2, sizeof(r2));
                             r2.InterfaceIndex = pi->Adapter[i].Index;
                             WCHAR name[280];
-                            if (GetIfEntry2(&r2) == NO_ERROR && r2.FriendlyName[0]) {
+                            if (GetIfEntry2(&r2) == NO_ERROR && r2.Alias[0]) {
                                 swprintf_s(name, 280, L"%s (if %lu)",
-                                           r2.FriendlyName,
+                                           r2.Alias,
                                            (unsigned long)pi->Adapter[i].Index);
                             } else {
                                 swprintf_s(name, 280, L"Interface %lu",
