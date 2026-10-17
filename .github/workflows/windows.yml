@@ -50,10 +50,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NetSpeedMeter-v${{ env.APP_VER }}-x64
+          name: NetSpeedMonitor-v${{ env.APP_VER }}-x64
           path: |
             src/NetSpeedMonitor.exe
-            dist/NetSpeedMeter-${{ env.APP_VER }}-x64-Setup.exe
+            dist/NetSpeedMonitor-${{ env.APP_VER }}-x64-Setup.exe
           if-no-files-found: error
 
   release:
@@ -63,33 +63,23 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: NetSpeedMeter-v${{ env.APP_VER }}-x64
+          name: NetSpeedMonitor-v${{ env.APP_VER }}-x64
       - name: Create release + attach assets
         shell: bash
         run: |
           find . -name 'NetSpeedMonitor.exe' -exec mv {} NetSpeedMonitor-v${APP_VER}-x64.exe \;
-          find . -name '*-Setup.exe' -exec mv {} NetSpeedMeter-${APP_VER}-x64-Setup.exe \;
-          ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe
+          find . -name '*-Setup.exe' -exec mv {} NetSpeedMonitor-${APP_VER}-x64-Setup.exe \;
+          ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMonitor-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
-            --title "NetSpeedMonitor ${GITHUB_REF_NAME} - ORIGINAL 2.5.4.0 rebuild" \
+            --title "NetSpeedMonitor ${GITHUB_REF_NAME}" \
             --notes "## Downloads
 
-          - **NetSpeedMeter-${APP_VER}-x64-Setup.exe** - recommended installer (per-user, no admin, optional autostart)
+          - **NetSpeedMonitor-${APP_VER}-x64-Setup.exe** - per-user installer with optional autostart
           - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
 
-          ## What is v${APP_VER}
-          A faithful rebuild of the ORIGINAL NetSpeedMonitor 2.5.4.0, reverse-engineered from the official MSI payload (core_dll_601_x64):
-
-          - **Original display**: 'Sent: 12.34 kB/s  Recv: 145.67 kB/s' - one row, taskbar-native colors, configurable Sent/Recv labels and order (layout.textsent / layout.textrecv / layout.changeorder).
-          - **Original units and precision**: kB/s (1000), KiB/s (1024), MB/s, MiB/s + %.0f..%.3f precision - the exact unit strings and core.precision key of the original binary.
-          - **Original menu**: Monitoring On/Off, Data Traffic, Reset Session, Traffic Import/Export Wizard, NetSpeedMonitor Website, Settings, Enable Toolbar Tooltip, Exit.
-          - **Settings dialog** (the original configuration UI): interface picker, unit/precision, Sent/Recv texts, swap order, font, text color, tooltip, autostart.
-          - **Data Traffic window**: Session / Today / Month / Total x Sent / Recv, 'System Uptime: %d Days %02d:%02d:%02d', daily history list, 14-day bar graph, CSV import/export, Clear Database. Daily log file instead of SQLite (same information, same path).
-          - **Original registry schema**: core.monitoring, core.interface, core.bitrate, core.precision, layout.* under HKCU\\\\Software\\\\NetSpeedMonitor (v2.x values migrate automatically).
-          - **Engine**: the original GetInterfaceInfo + per-adapter octet-delta system with the working counter layer (GetIfEntry2 first, legacy GetIfEntry fallback) - the counter fix that killed the 0.00 bug is kept, everything else is the 2.5.4.0 semantics.
-          - **Taskbar hosting**: the original was a DeskBand COM object, which Windows 11 removed; this rebuild hosts the same text in the taskbar via the SetParent technique (works on Windows 10 and 11), with a floating topmost fallback." \
-            NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe || \
-          gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMeter-${APP_VER}-x64-Setup.exe --clobber
+          Displays live Sent and Recv network speed in the Windows taskbar. It includes interface selection, configurable units and precision, traffic totals and daily history, CSV import/export, tooltip controls, autostart, and a floating fallback." \
+            NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMonitor-${APP_VER}-x64-Setup.exe || \
+          gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMonitor-${APP_VER}-x64-Setup.exe --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

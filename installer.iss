@@ -1,7 +1,7 @@
-; NetSpeedMeter installer (Inno Setup 6) - per-user, no UAC needed
+; NetSpeedMonitor installer (Inno Setup 6) - per-user, no UAC needed
 ; Build: ISCC.exe /DMyAppVersion=2.6.1 installer.iss
 
-#define MyAppName "NetSpeedMeter"
+#define MyAppName "NetSpeedMonitor"
 #define MyAppExe "NetSpeedMonitor.exe"
 #define MyAppPublisher "3S Verse"
 #define MyAppURL "https://github.com/abaduchanna/NetSpeedMeter"
@@ -21,7 +21,7 @@ DisableDirPage=no
 DisableProgramGroupPage=yes
 LicenseFile=LICENSE
 OutputDir=dist
-OutputBaseFilename=NetSpeedMeter-{#MyAppVersion}-x64-Setup
+OutputBaseFilename=NetSpeedMonitor-{#MyAppVersion}-x64-Setup
 SetupIconFile=src\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExe}
 Compression=lzma2/max
@@ -35,13 +35,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "autostart"; Description: "Start NetSpeedMeter automatically when I sign in"; GroupDescription: "Startup:"
+Name: "autostart"; Description: "Start NetSpeedMonitor automatically when I sign in"; GroupDescription: "Startup:"
 
 [Files]
 Source: "src\NetSpeedMonitor.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Comment: "Taskbar network speed display (download green / upload red)"
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Comment: "Taskbar network speed display"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Tasks: desktopicon
 
 [Registry]

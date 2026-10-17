@@ -2014,16 +2014,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             break;
         case IDM_ABOUT:
             MessageBoxW(hwnd,
-                L"NetSpeedMonitor v" APP_VERSION L"\r\n"
-                L"ORIGINAL NetSpeedMonitor 2.5.4.0 rebuild (from the MSI)\r\n\r\n"
-                L"Original app: Florian Gilles (floriangilles.com) - MIT.\r\n"
-                L"Display: 'Sent: x kB/s  Recv: y kB/s' inside the taskbar,\r\n"
-                L"units kB/KiB/MB/MiB, precision 0-3, original core.*/layout.*\r\n"
-                L"registry settings, Data Traffic window with daily history,\r\n"
-                L"CSV import/export and the original menu.\r\n\r\n"
-                L"Engine: original GetInterfaceInfo + per-adapter octet deltas,\r\n"
-                L"modernized counter layer (GetIfEntry2, as Task Manager uses)\r\n"
-                L"because modern NDIS6 drivers freeze the legacy counters.\r\n\r\n"
+                L"Displays live sent and received network speed in the Windows taskbar.\r\n\r\n"
+                L"Includes interface selection, configurable units and precision,\r\n"
+                L"traffic totals and daily history, CSV import/export, tooltip,\r\n"
+                L"start-with-Windows, and an optional floating display.\r\n\r\n"
                 L"Double-click: Data Traffic  |  Right-click: menu",
                 APP_NAME, MB_ICONINFORMATION);
             break;
