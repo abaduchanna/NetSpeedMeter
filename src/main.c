@@ -78,13 +78,15 @@
 #include <shellapi.h>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <tlhelp32.h>
 #include <wchar.h>
+#include <wctype.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.1"
+#define APP_VERSION  L"3.0.2"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
@@ -2100,6 +2102,60 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// --------------------------------------------------------------- takeover
+// T198: a second launch hits this when another copy already holds the
+// single-instance mutex - typically an older INVISIBLE build Windows
+// started at login, or a duplicate start. Instead of nagging with a
+// dialog, silently end every other NetSpeedMonitor/NetSpeedMeter process
+// and let this launch take over. Returns how many processes were ended
+// (-1 if the process list could not be read).
+static int KillOtherNetSpeedInstances(void)
+{
+    const WCHAR* prefixes[2] = { L"NetSpeedMonitor", L"NetSpeedMeter" };
+    DWORD self = GetCurrentProcessId();
+    int killed = 0;
+
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return -1;
+
+    PROCESSENTRY32W pe;
+    ZeroMemory(&pe, sizeof(pe));
+    pe.dwSize = sizeof(pe);
+    if (!Process32FirstW(snap, &pe)) { CloseHandle(snap); return -1; }
+
+    do {
+        if (pe.th32ProcessID == self) continue;
+
+        BOOL match = FALSE;
+        for (int i = 0; i < 2 && !match; ++i) {
+            size_t plen = wcslen(prefixes[i]);
+            if (wcslen(pe.szExeFile) >= plen &&
+                _wcsnicmp(pe.szExeFile, prefixes[i], plen) == 0)
+                match = TRUE;
+        }
+        if (!match) continue;
+
+        // never touch installers/uninstallers that merely share the prefix
+        WCHAR low[MAX_PATH];
+        lstrcpynW(low, pe.szExeFile, MAX_PATH);
+        for (WCHAR* p = low; *p; ++p) *p = (WCHAR)towlower(*p);
+        if (wcsstr(low, L"setup") || wcsstr(low, L"unins")) continue;
+
+        HANDLE p = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE,
+                               pe.th32ProcessID);
+        if (p) {
+            if (TerminateProcess(p, 0)) {
+                WaitForSingleObject(p, 2000);
+                ++killed;
+            }
+            CloseHandle(p);
+        }
+    } while (Process32NextW(snap, &pe));
+
+    CloseHandle(snap);
+    return killed;
+}
+
 // --------------------------------------------------------------- main
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
 {
@@ -2107,17 +2163,26 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
 
     HANDLE mutex = CreateMutexW(NULL, FALSE, MUTEX_NAME);
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        int rc = MessageBoxW(NULL,
-            L"NetSpeedMonitor is already running.\r\n\r\n"
-            L"Look in the taskbar 'hidden icons' area (the ^ chevron near\r\n"
-            L"the clock), right-click it for the menu.\r\n\r\n"
-            L"If the running copy is an older INVISIBLE version, click OK\r\n"
-            L"to open Task Manager and end 'NetSpeedMonitor.exe', then\r\n"
-            L"start this version again.",
-            APP_NAME, MB_OKCANCEL | MB_ICONINFORMATION);
-        if (rc == IDOK)
-            ShellExecuteW(NULL, L"open", L"taskmgr.exe", NULL, NULL, SW_SHOWNORMAL);
-        return 0;
+        // T198: no dialog, ever. End the other copy (old INVISIBLE builds
+        // keep running from Windows startup) and take over silently.
+        int killed = KillOtherNetSpeedInstances();
+        CloseHandle(mutex);          // release our probe handle first
+        Sleep(300);                  // let the mutex object go away
+        mutex = CreateMutexW(NULL, FALSE, MUTEX_NAME);
+        if (!mutex || GetLastError() == ERROR_ALREADY_EXISTS) {
+            WCHAR b[160];
+            swprintf_s(b, 160,
+                L"second-instance takeover failed (ended %d) - exiting silently",
+                killed);
+            LogLine(b);
+            if (mutex) CloseHandle(mutex);
+            return 0;                // silent exit, never a MessageBox
+        }
+        {
+            WCHAR b[80];
+            swprintf_s(b, 80, L"second-instance takeover ok (ended %d)", killed);
+            LogLine(b);
+        }
     }
 
     InitCommonControls();

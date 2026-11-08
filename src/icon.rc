@@ -10,8 +10,8 @@
 #endif
 
 1 VERSIONINFO
-FILEVERSION     3,0,0,0
-PRODUCTVERSION  3,0,0,0
+FILEVERSION     3,0,2,0
+PRODUCTVERSION  3,0,2,0
 FILEOS          VOS_NT_WINDOWS32
 FILETYPE        VFT_APP
 FILESUBTYPE     0
@@ -22,11 +22,11 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "3S Verse"
       VALUE "FileDescription",  "NetSpeedMonitor - original 2.5.4.0 rebuild (taskbar network speed display)"
-      VALUE "FileVersion",      "3.0.0"
+      VALUE "FileVersion",      "3.0.2"
       VALUE "InternalName",     "NetSpeedMonitor"
       VALUE "OriginalFilename", "NetSpeedMonitor.exe"
       VALUE "ProductName",      "NetSpeedMonitor"
-      VALUE "ProductVersion",   "3.0.0"
+      VALUE "ProductVersion",   "3.0.2"
       VALUE "LegalCopyright",   "MIT License - 3S Verse"
     END
   END
