@@ -1,5 +1,7 @@
 # NetSpeedMonitor
 
+> Repository name: NetSpeedMeter. Product name: NetSpeedMonitor.
+
 NetSpeedMonitor displays the current sent and received network speed in the Windows taskbar.
 
 ---
@@ -23,11 +25,11 @@ NetSpeedMonitor displays the current sent and received network speed in the Wind
 
 ## Install
 
-Download the x64 setup file from the repository's Releases page and run it. The installer works per user and can optionally create a desktop shortcut and enable start-with-Windows.
+Download `NetSpeedMonitor-3.0.2-x64-Setup.exe` from the [latest release](https://github.com/abaduchanna/NetSpeedMeter/releases/latest) and run it. The installer works per user and can optionally create a desktop shortcut and enable start-with-Windows.
 
 ## Portable use
 
-Download the portable x64 executable from the Releases page and run it directly. No background service is installed.
+Download `NetSpeedMonitor-v3.0.2-x64.exe` from the Releases page and run it directly. No background service is installed.
 
 ## Controls
 
