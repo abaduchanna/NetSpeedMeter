@@ -21,6 +21,16 @@ jobs:
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Build taskbar XAML bridge DLL (Windows 11 taskbar reservation)
+        shell: cmd
+        working-directory: src\taskbar_xaml
+        run: |
+          cl /nologo /std:c++20 /EHsc /MT /LD /O2 xaml_bridge.cpp ^
+            /Foxaml_bridge.obj ^
+            /link /Brepro /OUT:..\NetSpeedTaskbarXaml.dll /IMPLIB:NetSpeedTaskbarXaml.lib ^
+            /DEF:xaml_bridge.def windowsapp.lib runtimeobject.lib user32.lib ole32.lib
+          dir ..\NetSpeedTaskbarXaml.dll
+
       - name: Build NetSpeedMonitor.exe
         shell: cmd
         working-directory: src
@@ -53,6 +63,7 @@ jobs:
           name: NetSpeedMonitor-v${{ env.APP_VER }}-x64
           path: |
             src/NetSpeedMonitor.exe
+            src/NetSpeedTaskbarXaml.dll
             dist/NetSpeedMonitor-${{ env.APP_VER }}-x64-Setup.exe
           if-no-files-found: error
 
@@ -67,19 +78,24 @@ jobs:
       - name: Create release + attach assets
         shell: bash
         run: |
-          find . -name 'NetSpeedMonitor.exe' -exec mv {} NetSpeedMonitor-v${APP_VER}-x64.exe \;
+          find . -name 'NetSpeedMonitor.exe' -exec mv {} NetSpeedMonitor.exe \;
+          find . -name 'NetSpeedTaskbarXaml.dll' -exec mv {} NetSpeedTaskbarXaml.dll \;
           find . -name '*-Setup.exe' -exec mv {} NetSpeedMonitor-${APP_VER}-x64-Setup.exe \;
-          ls -la NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMonitor-${APP_VER}-x64-Setup.exe
+          # Portable mode is now 2 files (the exe plus its optional Windows 11
+          # taskbar-reservation DLL) - zip them together as one download so
+          # "portable" still means "one file to grab".
+          zip -j NetSpeedMonitor-v${APP_VER}-x64-portable.zip NetSpeedMonitor.exe NetSpeedTaskbarXaml.dll
+          ls -la NetSpeedMonitor-v${APP_VER}-x64-portable.zip NetSpeedMonitor-${APP_VER}-x64-Setup.exe
           gh release create "${GITHUB_REF_NAME}" \
             --title "NetSpeedMonitor ${GITHUB_REF_NAME}" \
             --notes "## Downloads
 
           - **NetSpeedMonitor-${APP_VER}-x64-Setup.exe** - per-user installer with optional autostart
-          - **NetSpeedMonitor-v${APP_VER}-x64.exe** - portable single exe
+          - **NetSpeedMonitor-v${APP_VER}-x64-portable.zip** - portable, no installer (unzip and run NetSpeedMonitor.exe; keep NetSpeedTaskbarXaml.dll next to it)
 
-          Displays live Sent and Recv network speed in the Windows taskbar. It includes interface selection, configurable units and precision, traffic totals and daily history, CSV import/export, tooltip controls, autostart, and a floating fallback." \
-            NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMonitor-${APP_VER}-x64-Setup.exe || \
-          gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v${APP_VER}-x64.exe NetSpeedMonitor-${APP_VER}-x64-Setup.exe --clobber
+          Displays live Sent and Recv network speed in the Windows taskbar. It includes interface selection, configurable units and precision, traffic totals and daily history, CSV import/export, tooltip controls, autostart, and a floating fallback. On Windows 11, embedding now reserves real space in Explorer's own taskbar layout (NetSpeedTaskbarXaml.dll) instead of only reparenting into the compatibility HWND strip; Windows 10 and any Windows 11 case the bridge can't reach fall back to the proven SetParent technique automatically." \
+            NetSpeedMonitor-v${APP_VER}-x64-portable.zip NetSpeedMonitor-${APP_VER}-x64-Setup.exe || \
+          gh release upload "${GITHUB_REF_NAME}" NetSpeedMonitor-v${APP_VER}-x64-portable.zip NetSpeedMonitor-${APP_VER}-x64-Setup.exe --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

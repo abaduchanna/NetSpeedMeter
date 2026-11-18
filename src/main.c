@@ -911,6 +911,109 @@ static void SaveSettings(void)
     }
 }
 
+// ---------------------------------------------------------------------
+// Windows 11 XAML taskbar reservation (optional, best-effort).
+//
+// The modern (Windows 11) taskbar is built from XAML, not the classic HWND
+// strip - SetParent() below still works there in practice, but it is a
+// compatibility shim Explorer offers for older apps, not a real reservation
+// in the taskbar's own layout, so its exact pixel alignment can drift from
+// a true XAML button. NetSpeedTaskbarXaml.dll (built from
+// src/taskbar_xaml/, shipped next to this exe) asks Explorer's own taskbar
+// layout engine to reserve real space and hands back the exact screen
+// rectangle, the same technique 3SVerse's MangoDisk project uses for its
+// own taskbar indicator. It is Windows 11 only and best-effort: any
+// failure (DLL missing, Windows 10, unsupported shell, still attaching)
+// falls straight through to the proven SetParent path below, unchanged.
+// ---------------------------------------------------------------------
+typedef HRESULT (WINAPI *NetSpeedTaskbarApply_t)(UINT width, UINT height, UINT gap,
+                                                  UINT placement, const WCHAR* logFile,
+                                                  RECT* bounds);
+typedef void (WINAPI *NetSpeedTaskbarRelease_t)(void);
+
+static HMODULE                  g_hXamlDll      = NULL;
+static NetSpeedTaskbarApply_t   g_XamlApply     = NULL;
+static NetSpeedTaskbarRelease_t g_XamlRelease   = NULL;
+static BOOL                     g_xamlTried     = FALSE;
+static BOOL                     g_xamlActive    = FALSE; // positioned via the XAML bridge this/last tick
+static WCHAR                    g_xamlLogPath[MAX_PATH * 2] = L"";
+
+static void EnsureXamlBridgeLoaded(void)
+{
+    WCHAR path[MAX_PATH];
+    WCHAR *slash;
+    DWORD n;
+    if (g_xamlTried) return;
+    g_xamlTried = TRUE;
+
+    n = GetEnvironmentVariableW(L"LOCALAPPDATA", g_xamlLogPath, MAX_PATH * 2);
+    if (n > 0 && n < MAX_PATH) {
+        wcscat_s(g_xamlLogPath, MAX_PATH * 2, L"\\NetSpeedMonitor\\log.txt");
+    } else {
+        g_xamlLogPath[0] = L'\0';
+    }
+
+    n = GetModuleFileNameW(NULL, path, MAX_PATH);
+    if (!n || n >= MAX_PATH) return;
+    slash = wcsrchr(path, L'\\');
+    if (!slash) return;
+    wcscpy_s(slash + 1, MAX_PATH - (DWORD)(slash + 1 - path), L"NetSpeedTaskbarXaml.dll");
+
+    g_hXamlDll = LoadLibraryW(path);
+    if (!g_hXamlDll) return;
+    g_XamlApply = (NetSpeedTaskbarApply_t)GetProcAddress(g_hXamlDll, "NetSpeedTaskbarApply");
+    g_XamlRelease = (NetSpeedTaskbarRelease_t)GetProcAddress(g_hXamlDll, "NetSpeedTaskbarRelease");
+    if (!g_XamlApply || !g_XamlRelease) {
+        FreeLibrary(g_hXamlDll);
+        g_hXamlDll = NULL;
+        g_XamlApply = NULL;
+        g_XamlRelease = NULL;
+    }
+}
+
+// taskbar::Placement enum order in xaml_lease.hpp is {Right, AfterStart,
+// BarLeft, BarRight}. Windows 11's default centered taskbar layout needs
+// BarRight (3) to sit at the right edge; the classic left-aligned layout
+// (TaskbarAl=0, still choosable in Windows 11 settings) needs plain
+// Right (0).
+static UINT XamlRightEdgePlacement(void)
+{
+    HKEY k;
+    DWORD val = 1; // default (unreadable key) matches Win11's own default
+    DWORD sz = sizeof(val), type = REG_DWORD;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+            0, KEY_READ, &k) == ERROR_SUCCESS) {
+        if (RegQueryValueExW(k, L"TaskbarAl", NULL, &type, (BYTE*)&val, &sz) != ERROR_SUCCESS)
+            val = 1;
+        RegCloseKey(k);
+    }
+    return val != 0 ? 3u /* BarRight */ : 0u /* Right */;
+}
+
+// Tries the XAML reservation for this tick. Returns TRUE and positions
+// *me* at the authoritative bounds Explorer reported on success - the
+// caller must skip the legacy SetParent path entirely that tick. Returns
+// FALSE (no window changes made) on any failure, so the legacy path runs
+// exactly as it always has.
+static BOOL TryXamlEmbed(HWND me)
+{
+    RECT bounds;
+    HRESULT hr;
+    EnsureXamlBridgeLoaded();
+    if (!g_XamlApply) return FALSE;
+    hr = g_XamlApply((UINT)g_winW, (UINT)g_winH, (UINT)DpiVal(6),
+                     XamlRightEdgePlacement(), g_xamlLogPath, &bounds);
+    if (FAILED(hr)) return FALSE;
+    if (GetParent(me) != NULL) SetParent(me, NULL);
+    g_embedded = TRUE;
+    if (!IsWindowVisible(me)) ShowWindow(me, SW_SHOWNOACTIVATE);
+    SetWindowPos(me, HWND_TOPMOST, bounds.left, bounds.top,
+                 bounds.right - bounds.left, bounds.bottom - bounds.top,
+                 SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    return TRUE;
+}
+
 // Re-find the taskbar, (re)embed and reposition every second (explorer
 // restarts, taskbar moves, DPI changes all recover silently). Same
 // proven v2.x placement: taskbar, just left of TrayNotifyWnd.
@@ -923,12 +1026,16 @@ static void RecalcAndPosition(void)
         g_hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
 
     if (g_floatMode) {
+        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); g_xamlActive = FALSE; }
         if (GetParent(me) != NULL) {
             SetParent(me, NULL);
             g_embedded = FALSE;
             LogLine(L"mode=floating: unparented");
         }
     } else {
+        if (TryXamlEmbed(me)) { g_xamlActive = TRUE; return; }
+        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); }
+        g_xamlActive = FALSE;
         if (!IsWindow(g_hTaskbar)) {
             g_embedded = FALSE;
             return;
@@ -2095,6 +2202,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         KillTimer(hwnd, TIMER_TICK);
         TrafficSave();
         TrayRemove();
+        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); g_xamlActive = FALSE; }
+        if (g_hXamlDll) { FreeLibrary(g_hXamlDll); g_hXamlDll = NULL; }
         LogLine(L"exit");
         PostQuitMessage(0);
         return 0;

@@ -39,6 +39,7 @@ Name: "autostart"; Description: "Start NetSpeedMonitor automatically when I sign
 
 [Files]
 Source: "src\NetSpeedMonitor.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "src\NetSpeedTaskbarXaml.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"; Comment: "Taskbar network speed display"

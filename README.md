@@ -19,7 +19,7 @@ NetSpeedMonitor displays the current sent and received network speed in the Wind
 - Shows daily traffic history and a 14-day graph.
 - Imports and exports traffic history as CSV.
 - Can reset the current session or clear saved traffic history.
-- Supports embedded taskbar mode and a floating fallback.
+- Supports embedded taskbar mode and a floating fallback. On Windows 11, embedding reserves real space directly in Explorer's own taskbar layout (via `NetSpeedTaskbarXaml.dll`, shipped alongside the exe) instead of only the legacy compatibility reparenting trick, for pixel-accurate placement; Windows 10, or any Windows 11 case the bridge can't reach, falls back to the proven reparenting technique automatically.
 - Can start automatically when you sign in to Windows.
 - Provides a tray icon with access to monitoring, traffic, settings, diagnostics, and exit controls.
 
@@ -29,7 +29,7 @@ Download `NetSpeedMonitor-3.0.2-x64-Setup.exe` from the [latest release](https:/
 
 ## Portable use
 
-Download `NetSpeedMonitor-v3.0.2-x64.exe` from the Releases page and run it directly. No background service is installed.
+Download `NetSpeedMonitor-v3.0.2-x64-portable.zip` from the Releases page, unzip it, and run `NetSpeedMonitor.exe`. Keep `NetSpeedTaskbarXaml.dll` in the same folder - it enables the Windows 11 taskbar reservation; the app still runs and falls back automatically without it, just without the pixel-accurate Windows 11 placement. No background service is installed.
 
 ## Controls
 
