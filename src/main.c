@@ -86,7 +86,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.5"
+#define APP_VERSION  L"3.0.6"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
