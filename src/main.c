@@ -86,7 +86,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.2"
+#define APP_VERSION  L"3.0.5"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
@@ -146,6 +146,8 @@ static HFONT  g_listFont;
 static UINT   g_dpi            = 96;
 static int    g_winW           = 0;
 static int    g_winH           = 0;
+static int    g_stackW         = 0;   // narrow Sent/Recv-stacked size, used when embedded in the taskbar
+static int    g_stackH         = 0;
 static BOOL   g_embedded       = FALSE;
 static BOOL   g_floatMode      = FALSE;
 static int    g_fallbackTries  = 0;
@@ -716,6 +718,33 @@ static void CreateFontForDpi(void)
         ReleaseDC(g_hwnd, dc);
     }
     if (g_winW <= 0) { g_winW = DpiVal(250); g_winH = DpiVal(28); }
+
+    // Narrow stacked size: Sent on one line, Recv on the next, like a taskbar
+    // icon rather than a wide status row - this is what actually fits in the
+    // real taskbar strip, where a single wide "Sent X  Recv Y" row wouldn't.
+    {
+        HDC dc2 = GetDC(g_hwnd);
+        if (dc2) {
+            HGDIOBJ old2 = SelectObject(dc2, g_font);
+            WCHAR sampleA[80], sampleB[80];
+            SIZE sa, sb;
+            swprintf_s(sampleA, 80, L"%s 888.88 MB/s", g_lblSent);
+            swprintf_s(sampleB, 80, L"%s 888.88 MB/s", g_lblRecv);
+            GetTextExtentPoint32W(dc2, sampleA, (int)wcslen(sampleA), &sa);
+            GetTextExtentPoint32W(dc2, sampleB, (int)wcslen(sampleB), &sb);
+            {
+                int stackTextW = sa.cx > sb.cx ? sa.cx : sb.cx;
+                int lineH = sa.cy > sb.cy ? sa.cy : sb.cy;
+                g_stackW = stackTextW + DpiVal(18);
+                g_stackH = lineH * 2 + DpiVal(6);
+            }
+            SelectObject(dc2, old2);
+            ReleaseDC(g_hwnd, dc2);
+        }
+        if (g_stackW < DpiVal(60)) g_stackW = DpiVal(60);
+        if (g_stackH < DpiVal(28)) g_stackH = DpiVal(28);
+    }
+
     g_listFont = CreateFontW(-MulDiv(9, (int)g_dpi, 72), 0, 0, 0, FW_NORMAL,
                              FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -1002,7 +1031,7 @@ static BOOL TryXamlEmbed(HWND me)
     HRESULT hr;
     EnsureXamlBridgeLoaded();
     if (!g_XamlApply) return FALSE;
-    hr = g_XamlApply((UINT)g_winW, (UINT)g_winH, (UINT)DpiVal(2),
+    hr = g_XamlApply((UINT)g_stackW, (UINT)g_stackH, (UINT)DpiVal(2),
                      XamlRightEdgePlacement(), g_xamlLogPath, &bounds);
     if (FAILED(hr)) return FALSE;
     if (GetParent(me) != NULL) SetParent(me, NULL);
@@ -1101,7 +1130,7 @@ static void RecalcAndPosition(void)
         }
     }
 
-    int useH = g_winH;
+    int useH = g_stackH;
     if (notifyHeight > 0 && useH > notifyHeight - DpiVal(4))
         useH = notifyHeight - DpiVal(4);
     else if (useH > th)
@@ -1113,11 +1142,11 @@ static void RecalcAndPosition(void)
         : (th - useH) / 2;
 
     int x;
-    if (notifyLeft > 0) x = notifyLeft - g_winW - DpiVal(6);
-    else                x = tw - g_winW - DpiVal(88) - DpiVal(6);
+    if (notifyLeft > 0) x = notifyLeft - g_stackW - DpiVal(6);
+    else                x = tw - g_stackW - DpiVal(88) - DpiVal(6);
     if (x < DpiVal(2)) x = DpiVal(2);
 
-    SetWindowPos(me, NULL, x, y, g_winW, useH,
+    SetWindowPos(me, NULL, x, y, g_stackW, useH,
                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
 
     if (!IsWindowVisible(me)) {
@@ -1202,6 +1231,57 @@ static void PaintSpeedRow(HDC dc, RECT rc,
     #undef DRAW_SEG
 }
 
+// Draws one "label value" pair centered as a single line within r (used by
+// the stacked taskbar layout: one call for the Sent line, one for Recv).
+static void DrawCenteredLabelValue(HDC dc, RECT r, const WCHAR* label, COLORREF lcol,
+                                   const WCHAR* value, COLORREF vcol)
+{
+    SIZE sl, sv;
+    int gap = DpiVal(3);
+    int total, x;
+    RECT rr;
+    GetTextExtentPoint32W(dc, label, (int)wcslen(label), &sl);
+    GetTextExtentPoint32W(dc, value, (int)wcslen(value), &sv);
+    total = sl.cx + gap + sv.cx;
+    x = r.left + ((r.right - r.left) - total) / 2;
+    if (x < r.left) x = r.left;
+
+    rr = r; rr.left = x; rr.right = x + sl.cx;
+    SetTextColor(dc, lcol);
+    DrawTextW(dc, label, -1, &rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    x += sl.cx + gap;
+    rr.left = x; rr.right = x + sv.cx;
+    SetTextColor(dc, vcol);
+    DrawTextW(dc, value, -1, &rr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+}
+
+// Taskbar (non-floating) layout: Sent above Recv, stacked, like a native
+// taskbar icon widget rather than a wide status row.
+static void PaintSpeedStacked(HDC dc, RECT rc,
+                              const WCHAR* l1, const WCHAR* v1,
+                              const WCHAR* l2, const WCHAR* v2)
+{
+    COLORREF labelColor = BlendColor(g_textColor, g_bgColor, 78);
+    COLORREF c1 = g_colorSpeeds ? (g_swapOrder ? g_downColor : g_upColor) : g_textColor;
+    COLORREF c2 = g_colorSpeeds ? (g_swapOrder ? g_upColor : g_downColor) : g_textColor;
+    SIZE sv1;
+    int lineH, totalH, startY;
+    RECT top, bottom;
+
+    SetBkMode(dc, TRANSPARENT);
+    GetTextExtentPoint32W(dc, v1, (int)wcslen(v1), &sv1);
+    lineH = sv1.cy > 0 ? sv1.cy : DpiVal(14);
+    totalH = lineH * 2;
+    startY = rc.top + ((rc.bottom - rc.top) - totalH) / 2;
+    if (startY < rc.top) startY = rc.top;
+
+    top = rc;    top.top = startY;          top.bottom = startY + lineH;
+    bottom = rc; bottom.top = startY + lineH; bottom.bottom = startY + lineH * 2;
+
+    DrawCenteredLabelValue(dc, top, l1, labelColor, v1, c1);
+    DrawCenteredLabelValue(dc, bottom, l2, labelColor, v2, c2);
+}
+
 static void OnPaint(HWND hwnd)
 {
     PAINTSTRUCT ps;
@@ -1255,7 +1335,10 @@ static void OnPaint(HWND hwnd)
             lstrcpynW(t1, g_lblSent, 80); lstrcpynW(t2, g_sentPart + lstrlenW(g_lblSent) + 1, 80);
             lstrcpynW(t3, g_lblRecv, 80); lstrcpynW(t4, g_recvPart + lstrlenW(g_lblRecv) + 1, 80);
         }
-        PaintSpeedRow(mem, textRc, t1, t2, t3, t4, g_text);
+        if (g_floatMode)
+            PaintSpeedRow(mem, textRc, t1, t2, t3, t4, g_text);
+        else
+            PaintSpeedStacked(mem, textRc, t1, t2, t3, t4);
         SelectObject(mem, of);
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -1958,7 +2041,8 @@ static void CopyDiagToClipboard(HWND hwnd)
         L"hwnd=%p parent=%p visible=%d\r\n"
         L"win rect=(%ld,%ld)-(%ld,%ld)\r\n"
         L"taskbar=%p rect=(%ld,%ld)-(%ld,%ld)\r\n"
-        L"dpi=%u winSize=%dx%d\r\n"
+        L"dpi=%u winSize=%dx%d stackSize=%dx%d\r\n"
+        L"xamlDllLoaded=%d xamlApplyFound=%d xamlActive=%d\r\n"
         L"text=%s\r\n",
         APP_VERSION,
         (int)g_monitoring, (int)g_floatMode, (int)g_embedded,
@@ -1968,7 +2052,9 @@ static void CopyDiagToClipboard(HWND hwnd)
         (long)rme.left, (long)rme.top, (long)rme.right, (long)rme.bottom,
         (void*)g_hTaskbar, (long)rtb.left, (long)rtb.top,
         (long)rtb.right, (long)rtb.bottom,
-        g_dpi, g_winW, g_winH, g_text);
+        g_dpi, g_winW, g_winH, g_stackW, g_stackH,
+        (int)(g_hXamlDll != NULL), (int)(g_XamlApply != NULL), (int)g_xamlActive,
+        g_text);
 
     {
         WCHAR e[300];
