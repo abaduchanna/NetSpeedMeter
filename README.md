@@ -25,11 +25,11 @@ NetSpeedMonitor displays the current sent and received network speed in the Wind
 
 ## Install
 
-Download `NetSpeedMonitor-3.0.3-x64-Setup.exe` from the [latest release](https://github.com/abaduchanna/NetSpeedMeter/releases/latest) and run it. The installer works per user and can optionally create a desktop shortcut and enable start-with-Windows.
+Download `NetSpeedMonitor-3.0.4-x64-Setup.exe` from the [latest release](https://github.com/abaduchanna/NetSpeedMeter/releases/latest) and run it. The installer works per user and can optionally create a desktop shortcut and enable start-with-Windows.
 
 ## Portable use
 
-Download `NetSpeedMonitor-v3.0.3-x64-portable.zip` from the Releases page, unzip it, and run `NetSpeedMonitor.exe`. Keep `NetSpeedTaskbarXaml.dll` in the same folder - it enables the Windows 11 taskbar reservation; the app still runs and falls back automatically without it, just without the pixel-accurate Windows 11 placement. No background service is installed.
+Download `NetSpeedMonitor-v3.0.4-x64-portable.zip` from the Releases page, unzip it, and run `NetSpeedMonitor.exe`. Keep `NetSpeedTaskbarXaml.dll` in the same folder - it enables the Windows 11 taskbar reservation; the app still runs and falls back automatically without it, just without the pixel-accurate Windows 11 placement. No background service is installed.
 
 ## Controls
 
