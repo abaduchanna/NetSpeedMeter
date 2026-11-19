@@ -86,7 +86,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.7"
+#define APP_VERSION  L"3.0.8"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
@@ -152,7 +152,7 @@ static int    g_stackW         = 0;   // narrow Sent/Recv-stacked size, used whe
 static int    g_stackH         = 0;
 static BOOL   g_embedded       = FALSE;
 static BOOL   g_floatMode      = FALSE;
-static int    g_fallbackTries  = 0;
+static int    g_embedFailTries = 0;  // consecutive embedded-mode failures (fallback popup)
 static COLORREF g_bgColor      = RGB(32, 32, 32);
 static COLORREF g_textColor    = RGB(240, 240, 240);
 static COLORREF g_upColor      = RGB(255, 112, 100);   // Sent red (opt-in)
@@ -224,8 +224,15 @@ static HMODULE User32(void)
     return h;
 }
 
-typedef BOOL (WINAPI *FN_SetProcessDpiAwarenessCtx)(HANDLE);
-typedef UINT (WINAPI *FN_GetDpiForWindow)(HWND);
+typedef BOOL   (WINAPI *FN_SetProcessDpiAwarenessCtx)(HANDLE);
+typedef UINT   (WINAPI *FN_GetDpiForWindow)(HWND);
+typedef HANDLE (WINAPI *FN_GetWindowDpiAwarenessContextT)(HWND);
+typedef ULONG  (WINAPI *FN_GetAwarenessFromDpiAwarenessContextT)(HANDLE);
+typedef HANDLE (WINAPI *FN_SetThreadDpiAwarenessContextT)(HANDLE);
+
+static FN_GetWindowDpiAwarenessContextT        p_GetWindowDpiCtx = NULL;
+static FN_GetAwarenessFromDpiAwarenessContextT p_GetAwareness    = NULL;
+static FN_SetThreadDpiAwarenessContextT        p_SetThreadDpiCtx = NULL;
 
 static void EnablePerMonitorDpi(void)
 {
@@ -233,6 +240,14 @@ static void EnablePerMonitorDpi(void)
         (FN_SetProcessDpiAwarenessCtx)(VOID*)GetProcAddress(
             User32(), "SetProcessDpiAwarenessContext");
     if (f) f((HANDLE)-4);   // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+    // Cross-process child hosting needs the parent window's DPI context
+    // (Win10 1607+ APIs; on older systems the dance is skipped entirely).
+    p_GetWindowDpiCtx = (FN_GetWindowDpiAwarenessContextT)(VOID*)GetProcAddress(
+        User32(), "GetWindowDpiAwarenessContext");
+    p_GetAwareness = (FN_GetAwarenessFromDpiAwarenessContextT)(VOID*)GetProcAddress(
+        User32(), "GetAwarenessFromDpiAwarenessContext");
+    p_SetThreadDpiCtx = (FN_SetThreadDpiAwarenessContextT)(VOID*)GetProcAddress(
+        User32(), "SetThreadDpiAwarenessContext");
 }
 
 static UINT DpiOfTaskbar(HWND taskbar)
@@ -1032,24 +1047,53 @@ static UINT XamlRightEdgePlacement(void)
 // reservation carved out of Explorer's own taskbar layout. Sibling z-order
 // only (HWND_TOP): never global TOPMOST, which reintroduces Show Desktop /
 // menu races. The floating mode keeps using the main popup window.
+//
+// Two MangoDisk details this port was missing (both are REQUIRED on
+// Windows 11, otherwise the child stays completely invisible):
+//  1. The creating thread temporarily adopts the TASKBAR WINDOW'S OWN DPI
+//     awareness context. A mismatched-context cross-process child is
+//     refused/virtualized by Windows and lands on the wrong pixels.
+//  2. The child carries WS_EX_LAYERED with opaque alpha (LWA_ALPHA 255).
+//     Explorer composes the Windows 11 taskbar through DirectComposition;
+//     an ordinary GDI child can lose that composition and never appear even
+//     though it is the top sibling. The layered bit keeps its opaque GDI
+//     output composed ABOVE Explorer's XAML island.
 static BOOL EnsureEmbedWindow(void)
 {
+    HANDLE prevCtx = NULL, parentCtx = NULL;
+    BOOL entered = FALSE;
     if (!IsWindow(g_hTaskbar)) return FALSE;
     if (IsWindow(g_hEmbed) && GetParent(g_hEmbed) == g_hTaskbar) return TRUE;
     if (IsWindow(g_hEmbed)) DestroyWindow(g_hEmbed);
-    g_hEmbed = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+
+    if (p_GetWindowDpiCtx && p_SetThreadDpiCtx) {
+        parentCtx = p_GetWindowDpiCtx(g_hTaskbar);
+        if (parentCtx) {
+            ULONG awareness = p_GetAwareness ? p_GetAwareness(parentCtx) : 2;
+            if (awareness == 2 /* DPI_AWARENESS_PER_MONITOR_AWARE */) {
+                prevCtx = p_SetThreadDpiCtx(parentCtx);
+                entered = (prevCtx != NULL);
+            } else {
+                LogLine(L"embed refused: taskbar is not per-monitor DPI aware");
+                return FALSE;
+            }
+        }
+    }
+    g_hEmbed = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         CLASS_NAME, APP_NAME, WS_CHILD | WS_CLIPSIBLINGS,
         0, 0, g_stackW > 0 ? g_stackW : 10, g_stackH > 0 ? g_stackH : 10,
         g_hTaskbar, NULL, GetModuleHandleW(NULL), NULL);
+    if (entered) p_SetThreadDpiCtx(prevCtx);
     if (!g_hEmbed) {
         WCHAR b[80];
         swprintf_s(b, 80, L"embed child create failed code=%lu", GetLastError());
         LogLine(b);
         return FALSE;
     }
+    SetLayeredWindowAttributes(g_hEmbed, 0, 255, LWA_ALPHA);   // opaque
     SetWindowLongPtrW(g_hEmbed, GWLP_USERDATA, 1);   // embed-child marker
     AddTooltipTool(g_hEmbed, 1);
-    LogLine(L"embed child created (WS_CHILD of taskbar)");
+    LogLine(L"embed child created (WS_CHILD of taskbar, layered, dpi-matched)");
     return TRUE;
 }
 
@@ -1084,6 +1128,16 @@ static BOOL TryXamlEmbed(void)
                      moved ? tl.x : 0, moved ? tl.y : 0, moved ? w : 0, moved ? h : 0,
                      SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW |
                      (moved ? 0 : (SWP_NOMOVE | SWP_NOSIZE)));
+        if (moved) {
+            static RECT prevSlot;
+            if (memcmp(&prevSlot, &bounds, sizeof(RECT)) != 0) {
+                WCHAR b[140];
+                prevSlot = bounds;
+                swprintf_s(b, 140, L"embed child placed in reserved slot (%ld,%ld) %ldx%ld",
+                           (long)bounds.left, (long)bounds.top, (long)w, (long)h);
+                LogLine(b);
+            }
+        }
     }
     return TRUE;
 }
@@ -1139,6 +1193,31 @@ static void PositionLegacyEmbed(void)
                  SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
 }
 
+// Positions the main popup just above the taskbar (or work area). Used for
+// floating mode AND as the automatic last-resort fallback when embedded mode
+// cannot show the taskbar child - the speeds must never be invisible.
+static void ShowFloatingPopup(HWND me)
+{
+    RECT rb;
+    int x, y;
+    BOOL haveTb = IsWindow(g_hTaskbar) && GetWindowRect(g_hTaskbar, &rb);
+    if (haveTb && (rb.bottom - rb.top) > 0) {
+        x = rb.right - g_winW - DpiVal(8);
+        y = rb.top - g_winH - DpiVal(2);
+    } else {
+        RECT wa;
+        if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;
+        x = wa.right - g_winW - DpiVal(8);
+        y = wa.bottom - g_winH - DpiVal(2);
+    }
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (!IsWindowVisible(me)) ShowWindow(me, SW_SHOWNOACTIVATE);
+    SetWindowPos(me, HWND_TOPMOST, x, y, g_winW, g_winH,
+                 SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    SyncTooltipRect(me, 0);
+}
+
 // Re-find the taskbar, (re)embed and reposition every second (explorer
 // restarts, taskbar moves, DPI changes all recover silently).
 //  - embedded: MangoDisk model - a dedicated WS_CHILD of the taskbar,
@@ -1157,30 +1236,13 @@ static void RecalcAndPosition(void)
         if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); g_xamlActive = FALSE; }
         g_embedded = FALSE;
         if (IsWindow(g_hEmbed)) DestroyWindow(g_hEmbed);
-
-        RECT rb;
-        BOOL haveTb = IsWindow(g_hTaskbar) && GetWindowRect(g_hTaskbar, &rb);
-        int x, y;
-        if (haveTb && (rb.bottom - rb.top) > 0) {
-            x = rb.right - g_winW - DpiVal(8);
-            y = rb.top - g_winH - DpiVal(2);
-        } else {
-            RECT wa;
-            if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;
-            x = wa.right - g_winW - DpiVal(8);
-            y = wa.bottom - g_winH - DpiVal(2);
-        }
-        if (x < 0) x = 0;
-        if (y < 0) y = 0;
-        if (!IsWindowVisible(me)) ShowWindow(me, SW_SHOWNOACTIVATE);
-        SetWindowPos(me, HWND_TOPMOST, x, y, g_winW, g_winH,
-                     SWP_NOACTIVATE | SWP_NOCOPYBITS);
-        SyncTooltipRect(me, 0);
+        ShowFloatingPopup(me);
         return;
     }
 
-    // embedded: main popup stays hidden, the taskbar child carries the display
-    if (IsWindowVisible(me)) ShowWindow(me, SW_HIDE);
+    // embedded: the taskbar child carries the display; the main popup stays
+    // hidden EXCEPT as an automatic last-resort fallback while the embed
+    // path keeps retrying every tick (Explorer restarts, DPI changes, ...).
     if (IsWindow(g_hTaskbar)) {
         UINT d = DpiOfTaskbar(g_hTaskbar);
         if (d != g_dpi) { g_dpi = d; CreateFontForDpi(); }
@@ -1189,20 +1251,28 @@ static void RecalcAndPosition(void)
     if (TryXamlEmbed()) {
         g_xamlActive = TRUE;
         g_embedded = TRUE;
-        SyncTooltipRect(g_hEmbed, 1);
-        return;
-    }
-    if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); }
-    g_xamlActive = FALSE;
-    if (!IsWindow(g_hTaskbar)) { g_embedded = FALSE; return; }
-
-    if (EnsureEmbedWindow()) {
-        PositionLegacyEmbed();
-        g_embedded = TRUE;
+        g_embedFailTries = 0;
         SyncTooltipRect(g_hEmbed, 1);
     } else {
-        g_embedded = FALSE;
+        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); }
+        g_xamlActive = FALSE;
+        if (IsWindow(g_hTaskbar) && EnsureEmbedWindow()) {
+            PositionLegacyEmbed();
+            g_embedded = TRUE;
+            g_embedFailTries = 0;
+            SyncTooltipRect(g_hEmbed, 1);
+        } else {
+            g_embedded = FALSE;
+        }
     }
+
+    if (g_embedded) {
+        if (IsWindowVisible(me)) ShowWindow(me, SW_HIDE);
+        return;
+    }
+    if (++g_embedFailTries == 3)
+        LogLine(L"embed unavailable - fallback popup shown (embed keeps retrying)");
+    ShowFloatingPopup(me);
 }
 
 
@@ -2101,6 +2171,7 @@ static void CopyDiagToClipboard(HWND hwnd)
         L"taskbar=%p rect=(%ld,%ld)-(%ld,%ld)\r\n"
         L"dpi=%u winSize=%dx%d stackSize=%dx%d\r\n"
         L"xamlDllLoaded=%d xamlApplyFound=%d\r\n"
+        L"embedLayered=%d taskbarAwareness=%u\r\n"
         L"text=%s\r\n",
         APP_VERSION,
         (int)g_monitoring, (int)g_floatMode, (int)g_embedded, (int)g_xamlActive,
@@ -2116,6 +2187,9 @@ static void CopyDiagToClipboard(HWND hwnd)
         (long)rtb.right, (long)rtb.bottom,
         g_dpi, g_winW, g_winH, g_stackW, g_stackH,
         (int)(g_hXamlDll != NULL), (int)(g_XamlApply != NULL),
+        (int)(g_hEmbed ? ((GetWindowLongPtrW(g_hEmbed, GWL_EXSTYLE) & WS_EX_LAYERED) != 0) : -1),
+        (unsigned)(p_GetAwareness && p_GetWindowDpiCtx && IsWindow(g_hTaskbar)
+            ? p_GetAwareness(p_GetWindowDpiCtx(g_hTaskbar)) : 99u),
         g_text);
 
     {
@@ -2225,12 +2299,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_CREATE:
-        SetTimer(hwnd, TIMER_TICK, 1000, NULL);
+        // only the main popup owns the update timer; the embed child is
+        // parented to the taskbar, shares this WndProc, and must NOT run it
+        if (GetParent(hwnd) == NULL) SetTimer(hwnd, TIMER_TICK, 1000, NULL);
         return 0;
     case WM_TIMER:
-        if (wp != TIMER_TICK) return 0;
+        if (wp != TIMER_TICK || hwnd != g_hwnd) return 0;
         UpdateSpeedText();
         RecalcAndPosition();
+        if (!g_floatMode && IsWindow(g_hEmbed)) InvalidateRect(g_hEmbed, NULL, FALSE);
         if (!g_trayAdded && ++g_trayTick >= 5) { g_trayTick = 0; TrayAdd(); }
         if (++g_hbTick >= 60) {
             g_hbTick = 0;
