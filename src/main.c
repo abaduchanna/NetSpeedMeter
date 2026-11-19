@@ -1002,7 +1002,7 @@ static BOOL TryXamlEmbed(HWND me)
     HRESULT hr;
     EnsureXamlBridgeLoaded();
     if (!g_XamlApply) return FALSE;
-    hr = g_XamlApply((UINT)g_winW, (UINT)g_winH, (UINT)DpiVal(6),
+    hr = g_XamlApply((UINT)g_winW, (UINT)g_winH, (UINT)DpiVal(2),
                      XamlRightEdgePlacement(), g_xamlLogPath, &bounds);
     if (FAILED(hr)) return FALSE;
     if (GetParent(me) != NULL) SetParent(me, NULL);
