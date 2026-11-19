@@ -86,7 +86,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.8"
+#define APP_VERSION  L"3.0.9"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
@@ -1066,16 +1066,25 @@ static BOOL EnsureEmbedWindow(void)
     if (IsWindow(g_hEmbed) && GetParent(g_hEmbed) == g_hTaskbar) return TRUE;
     if (IsWindow(g_hEmbed)) DestroyWindow(g_hEmbed);
 
+    // Adopt the taskbar's OWN DPI context while the cross-process child is
+    // born - whatever its awareness level is (per-monitor OR system).
+    // v3.0.8 entered ONLY per-monitor contexts and refused everything else,
+    // which killed the whole embed path on those machines and forced the
+    // floating fallback ("clicked taskbar but it floats, stacked text cut").
+    // Matching the taskbar's real context is the correct DPI-matched child
+    // in every case; if the context APIs are missing we simply skip the
+    // dance, exactly like the proven v2.x builds did.
     if (p_GetWindowDpiCtx && p_SetThreadDpiCtx) {
         parentCtx = p_GetWindowDpiCtx(g_hTaskbar);
         if (parentCtx) {
             ULONG awareness = p_GetAwareness ? p_GetAwareness(parentCtx) : 2;
-            if (awareness == 2 /* DPI_AWARENESS_PER_MONITOR_AWARE */) {
-                prevCtx = p_SetThreadDpiCtx(parentCtx);
-                entered = (prevCtx != NULL);
-            } else {
-                LogLine(L"embed refused: taskbar is not per-monitor DPI aware");
-                return FALSE;
+            prevCtx = p_SetThreadDpiCtx(parentCtx);
+            entered = (prevCtx != NULL);
+            {
+                WCHAR b[96];
+                swprintf_s(b, 96, L"embed ctx: taskbar dpi awareness=%lu entered=%d",
+                           awareness, (int)entered);
+                LogLine(b);
             }
         }
     }
@@ -1083,13 +1092,39 @@ static BOOL EnsureEmbedWindow(void)
         CLASS_NAME, APP_NAME, WS_CHILD | WS_CLIPSIBLINGS,
         0, 0, g_stackW > 0 ? g_stackW : 10, g_stackH > 0 ? g_stackH : 10,
         g_hTaskbar, NULL, GetModuleHandleW(NULL), NULL);
-    if (entered) p_SetThreadDpiCtx(prevCtx);
     if (!g_hEmbed) {
-        WCHAR b[80];
-        swprintf_s(b, 80, L"embed child create failed code=%lu", GetLastError());
-        LogLine(b);
-        return FALSE;
+        // Compatibility fallback: born a popup, then reparented into the
+        // taskbar - the exact technique the original NetSpeedMonitor 2.5.4
+        // used for a decade on every Windows version, in case a direct
+        // cross-process WS_CHILD creation is refused on some shells.
+        DWORD code = GetLastError();
+        g_hEmbed = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+            CLASS_NAME, APP_NAME, WS_POPUP | WS_CLIPSIBLINGS,
+            0, 0, g_stackW > 0 ? g_stackW : 10, g_stackH > 0 ? g_stackH : 10,
+            NULL, NULL, GetModuleHandleW(NULL), NULL);
+        if (g_hEmbed && SetParent(g_hEmbed, g_hTaskbar)) {
+            DWORD style = (DWORD)GetWindowLongW(g_hEmbed, GWL_STYLE);
+            style &= ~(DWORD)WS_POPUP;
+            style |= WS_CHILD;
+            SetWindowLongW(g_hEmbed, GWL_STYLE, style);
+            {
+                WCHAR b[110];
+                swprintf_s(b, 110,
+                    L"embed child via SetParent fallback (direct WS_CHILD failed code=%lu)", code);
+                LogLine(b);
+            }
+        } else {
+            if (g_hEmbed) { DestroyWindow(g_hEmbed); g_hEmbed = NULL; }
+            if (entered) p_SetThreadDpiCtx(prevCtx);
+            {
+                WCHAR b[80];
+                swprintf_s(b, 80, L"embed child create failed code=%lu", GetLastError());
+                LogLine(b);
+            }
+            return FALSE;
+        }
     }
+    if (entered) p_SetThreadDpiCtx(prevCtx);
     SetLayeredWindowAttributes(g_hEmbed, 0, 255, LWA_ALPHA);   // opaque
     SetWindowLongPtrW(g_hEmbed, GWLP_USERDATA, 1);   // embed-child marker
     AddTooltipTool(g_hEmbed, 1);
@@ -1440,10 +1475,28 @@ static void OnPaint(HWND hwnd)
             lstrcpynW(t1, g_lblSent, 80); lstrcpynW(t2, g_sentPart + lstrlenW(g_lblSent) + 1, 80);
             lstrcpynW(t3, g_lblRecv, 80); lstrcpynW(t4, g_recvPart + lstrlenW(g_lblRecv) + 1, 80);
         }
-        if (g_floatMode)
-            PaintSpeedRow(mem, textRc, t1, t2, t3, t4, g_text);
-        else
-            PaintSpeedStacked(mem, textRc, t1, t2, t3, t4);
+        // Layout follows the WINDOW, not the mode: the two-line stacked
+        // layout belongs only to the taskbar embed child (its g_stackW x
+        // g_stackH box is measured for two full lines). The main popup is a
+        // one-line window (g_winW x g_winH) both when the user chose the
+        // floating mode AND when the embed path temporarily falls back to
+        // it - painting the stacked pair there cut the Recv line in half
+        // (the v3.0.8 "stacked text is cut" bug). If the embed slot itself
+        // is ever clamped shorter than two text lines, the single row is
+        // drawn there too so text is never clipped anywhere.
+        {
+            BOOL stacked = (hwnd == g_hEmbed && GetParent(hwnd) == g_hTaskbar);
+            if (stacked) {
+                SIZE sv;
+                if (GetTextExtentPoint32W(mem, t2, (int)wcslen(t2), &sv) &&
+                    sv.cy > 0 && (rc.bottom - rc.top) < sv.cy * 2)
+                    stacked = FALSE;
+            }
+            if (stacked)
+                PaintSpeedStacked(mem, textRc, t1, t2, t3, t4);
+            else
+                PaintSpeedRow(mem, textRc, t1, t2, t3, t4, g_text);
+        }
         SelectObject(mem, of);
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
@@ -2298,11 +2351,16 @@ static void ShowContextMenu(HWND hwnd)
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
-    case WM_CREATE:
+    case WM_CREATE: {
         // only the main popup owns the update timer; the embed child is
-        // parented to the taskbar, shares this WndProc, and must NOT run it
-        if (GetParent(hwnd) == NULL) SetTimer(hwnd, TIMER_TICK, 1000, NULL);
-        return 0;
+        // parented to the taskbar, shares this WndProc, and must NOT run it.
+        // The main popup is created with lpParam == 1. The SetParent
+        // fallback child is born PARENTLESS (reparented after birth), so
+        // GetParent() alone can no longer tell them apart at this point.
+        CREATESTRUCTW* cs = (CREATESTRUCTW*)lp;
+        if (cs && cs->lpCreateParams == (LPVOID)1)
+            SetTimer(hwnd, TIMER_TICK, 1000, NULL);
+        return 0; }
     case WM_TIMER:
         if (wp != TIMER_TICK || hwnd != g_hwnd) return 0;
         UpdateSpeedText();
@@ -2563,7 +2621,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
         WS_EX_TOOLWINDOW | (g_floatMode ? WS_EX_TOPMOST : 0),
         CLASS_NAME, APP_NAME,
         WS_POPUP | WS_CLIPSIBLINGS, -32000, -32000, 10, 10,
-        NULL, NULL, hInst, NULL);
+        NULL, NULL, hInst, (LPVOID)1);
     if (!g_hwnd) return 1;
 
     CreateFontForDpi();
