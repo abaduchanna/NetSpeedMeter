@@ -86,7 +86,7 @@
 #include <stdlib.h>
 
 #define APP_NAME     L"NetSpeedMonitor"
-#define APP_VERSION  L"3.0.6"
+#define APP_VERSION  L"3.0.7"
 #define MUTEX_NAME   L"NetSpeedMonitor_Taskbar_SingleInstance"
 #define CLASS_NAME   L"NetSpeedMonitorTaskbarWnd"
 #define TRAFFIC_NAME L"NetSpeedMonitorTrafficWnd"
@@ -104,6 +104,7 @@
 #define IDM_SETTINGS  20007
 #define IDM_TOOLTIP   20008
 #define IDM_FLOAT     20009
+#define IDM_EMBED     20014
 #define IDM_AUTOSTART 20010
 #define IDM_DIAG      20011
 #define IDM_ABOUT     20012
@@ -138,6 +139,7 @@ typedef struct {
 // ------------------------------------------------------------------ state
 static HWND   g_hwnd;
 static HWND   g_hTaskbar;      // Shell_TrayWnd
+static HWND   g_hEmbed;        // dedicated WS_CHILD inside the taskbar (MangoDisk model)
 static HWND   g_hTraffic;      // Data Traffic window (created on demand)
 static HWND   g_hList;         // its ListView
 static HWND   g_hTooltip;
@@ -185,6 +187,10 @@ static BOOL     g_trayAdded    = FALSE;
 static NOTIFYICONDATAW g_nid;
 static HANDLE   g_logGuard     = NULL;
 static int      g_saveTick     = 0;
+
+// defined below; the embed window (created before these) shares the tooltip
+static void AddTooltipTool(HWND forWnd, UINT_PTR toolId);
+static void SyncTooltipRect(HWND forWnd, UINT_PTR toolId);
 
 // ------------------------------------------------------------------ log
 static void LogLine(const WCHAR* line)
@@ -1020,12 +1026,38 @@ static UINT XamlRightEdgePlacement(void)
     return val != 0 ? 3u /* BarRight */ : 0u /* Right */;
 }
 
-// Tries the XAML reservation for this tick. Returns TRUE and positions
-// *me* at the authoritative bounds Explorer reported on success - the
-// caller must skip the legacy SetParent path entirely that tick. Returns
-// FALSE (no window changes made) on any failure, so the legacy path runs
-// exactly as it always has.
-static BOOL TryXamlEmbed(HWND me)
+// The MangoDisk-style hosting model: a dedicated indicator window created
+// AT BIRTH as a real WS_CHILD of the taskbar - never a popup reparented
+// across processes with mismatched DPI. It lives inside the space the XAML
+// reservation carved out of Explorer's own taskbar layout. Sibling z-order
+// only (HWND_TOP): never global TOPMOST, which reintroduces Show Desktop /
+// menu races. The floating mode keeps using the main popup window.
+static BOOL EnsureEmbedWindow(void)
+{
+    if (!IsWindow(g_hTaskbar)) return FALSE;
+    if (IsWindow(g_hEmbed) && GetParent(g_hEmbed) == g_hTaskbar) return TRUE;
+    if (IsWindow(g_hEmbed)) DestroyWindow(g_hEmbed);
+    g_hEmbed = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        CLASS_NAME, APP_NAME, WS_CHILD | WS_CLIPSIBLINGS,
+        0, 0, g_stackW > 0 ? g_stackW : 10, g_stackH > 0 ? g_stackH : 10,
+        g_hTaskbar, NULL, GetModuleHandleW(NULL), NULL);
+    if (!g_hEmbed) {
+        WCHAR b[80];
+        swprintf_s(b, 80, L"embed child create failed code=%lu", GetLastError());
+        LogLine(b);
+        return FALSE;
+    }
+    SetWindowLongPtrW(g_hEmbed, GWLP_USERDATA, 1);   // embed-child marker
+    AddTooltipTool(g_hEmbed, 1);
+    LogLine(L"embed child created (WS_CHILD of taskbar)");
+    return TRUE;
+}
+
+// Tries the XAML reservation for this tick. Returns TRUE with the embed
+// child positioned at the authoritative bounds Explorer reported - the
+// caller must skip the legacy path entirely that tick. Returns FALSE (no
+// window changes made) on any failure, so the legacy path runs as before.
+static BOOL TryXamlEmbed(void)
 {
     RECT bounds;
     HRESULT hr;
@@ -1034,80 +1066,37 @@ static BOOL TryXamlEmbed(HWND me)
     hr = g_XamlApply((UINT)g_stackW, (UINT)g_stackH, (UINT)DpiVal(2),
                      XamlRightEdgePlacement(), g_xamlLogPath, &bounds);
     if (FAILED(hr)) return FALSE;
-    if (GetParent(me) != NULL) SetParent(me, NULL);
-    g_embedded = TRUE;
-    if (!IsWindowVisible(me)) ShowWindow(me, SW_SHOWNOACTIVATE);
-    SetWindowPos(me, HWND_TOPMOST, bounds.left, bounds.top,
-                 bounds.right - bounds.left, bounds.bottom - bounds.top,
-                 SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    if (!EnsureEmbedWindow()) return FALSE;
+    {
+        POINT tl;
+        int w, h;
+        RECT cur;
+        BOOL moved = TRUE;
+        tl.x = bounds.left; tl.y = bounds.top;
+        if (!ScreenToClient(g_hTaskbar, &tl)) return FALSE;
+        w = bounds.right - bounds.left;
+        h = bounds.bottom - bounds.top;
+        if (GetWindowRect(g_hEmbed, &cur) &&
+            cur.left == bounds.left && cur.top == bounds.top &&
+            cur.right == bounds.right && cur.bottom == bounds.bottom)
+            moved = FALSE;      // same slot: only re-assert sibling z-order
+        SetWindowPos(g_hEmbed, HWND_TOP,
+                     moved ? tl.x : 0, moved ? tl.y : 0, moved ? w : 0, moved ? h : 0,
+                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW |
+                     (moved ? 0 : (SWP_NOMOVE | SWP_NOSIZE)));
+    }
     return TRUE;
 }
 
-// Re-find the taskbar, (re)embed and reposition every second (explorer
-// restarts, taskbar moves, DPI changes all recover silently). Same
-// proven v2.x placement: taskbar, just left of TrayNotifyWnd.
-static void RecalcAndPosition(void)
+// Legacy (non-XAML) placement: the embed child inside the taskbar, just
+// left of TrayNotifyWnd - the proven v2.x coordinates, now on the child
+// window instead of a reparented popup.
+static void PositionLegacyEmbed(void)
 {
-    HWND me = g_hwnd;
-    if (!IsWindow(me)) return;
-
-    if (!IsWindow(g_hTaskbar))
-        g_hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
-
-    if (g_floatMode) {
-        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); g_xamlActive = FALSE; }
-        if (GetParent(me) != NULL) {
-            SetParent(me, NULL);
-            g_embedded = FALSE;
-            LogLine(L"mode=floating: unparented");
-        }
-    } else {
-        if (TryXamlEmbed(me)) { g_xamlActive = TRUE; return; }
-        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); }
-        g_xamlActive = FALSE;
-        if (!IsWindow(g_hTaskbar)) {
-            g_embedded = FALSE;
-            return;
-        }
-        if (GetParent(me) != g_hTaskbar) {
-            g_fallbackTries = 0;
-            UINT d = DpiOfTaskbar(g_hTaskbar);
-            if (d != g_dpi) { g_dpi = d; CreateFontForDpi(); }
-            BOOL ok = SetParent(me, g_hTaskbar) ? TRUE : FALSE;
-            if (ok != g_embedded) {
-                WCHAR b[120];
-                swprintf_s(b, 120, L"SetParent(taskbar=%p) -> %s",
-                           (void*)g_hTaskbar, ok ? L"OK" : L"FAILED");
-                LogLine(b);
-            }
-            g_embedded = ok;
-            ShowWindow(me, SW_SHOWNOACTIVATE);
-        }
-    }
-
     RECT rb;
-    BOOL haveTb = IsWindow(g_hTaskbar) && GetWindowRect(g_hTaskbar, &rb);
-
-    if (g_floatMode) {
-        int x, y;
-        if (haveTb && (rb.bottom - rb.top) > 0) {
-            x = rb.right - g_winW - DpiVal(8);
-            y = rb.top - g_winH - DpiVal(2);
-        } else {
-            RECT wa;
-            if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;
-            x = wa.right - g_winW - DpiVal(8);
-            y = wa.bottom - g_winH - DpiVal(2);
-        }
-        if (x < 0) x = 0;
-        if (y < 0) y = 0;
-        if (!IsWindowVisible(me)) ShowWindow(me, SW_SHOWNOACTIVATE);
-        SetWindowPos(me, HWND_TOPMOST, x, y, g_winW, g_winH,
-                     SWP_NOACTIVATE | SWP_NOCOPYBITS);
-        return;
-    }
-
-    if (!haveTb) return;
+    HWND me = g_hEmbed;
+    if (!IsWindow(me) || !IsWindow(g_hTaskbar)) return;
+    if (!GetWindowRect(g_hTaskbar, &rb)) return;
     int tw = rb.right - rb.left;
     int th = rb.bottom - rb.top;
     if (tw <= 0 || th <= 0) return;
@@ -1146,27 +1135,73 @@ static void RecalcAndPosition(void)
     else                x = tw - g_stackW - DpiVal(88) - DpiVal(6);
     if (x < DpiVal(2)) x = DpiVal(2);
 
-    SetWindowPos(me, NULL, x, y, g_stackW, useH,
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+    SetWindowPos(me, HWND_TOP, x, y, g_stackW, useH,
+                 SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+}
 
-    if (!IsWindowVisible(me)) {
-        ShowWindow(me, SW_SHOWNOACTIVATE);
-        LogLine(L"visibility re-asserted (was hidden)");
+// Re-find the taskbar, (re)embed and reposition every second (explorer
+// restarts, taskbar moves, DPI changes all recover silently).
+//  - embedded: MangoDisk model - a dedicated WS_CHILD of the taskbar,
+//    placed in the space the XAML reservation carved out (Windows 11) or
+//    at the classic TrayNotifyWnd-adjacent slot (legacy fallback).
+//  - floating: the main popup above the taskbar, unchanged.
+static void RecalcAndPosition(void)
+{
+    HWND me = g_hwnd;
+    if (!IsWindow(me)) return;
+
+    if (!IsWindow(g_hTaskbar))
+        g_hTaskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+
+    if (g_floatMode) {
+        if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); g_xamlActive = FALSE; }
+        g_embedded = FALSE;
+        if (IsWindow(g_hEmbed)) DestroyWindow(g_hEmbed);
+
+        RECT rb;
+        BOOL haveTb = IsWindow(g_hTaskbar) && GetWindowRect(g_hTaskbar, &rb);
+        int x, y;
+        if (haveTb && (rb.bottom - rb.top) > 0) {
+            x = rb.right - g_winW - DpiVal(8);
+            y = rb.top - g_winH - DpiVal(2);
+        } else {
+            RECT wa;
+            if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0)) return;
+            x = wa.right - g_winW - DpiVal(8);
+            y = wa.bottom - g_winH - DpiVal(2);
+        }
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (!IsWindowVisible(me)) ShowWindow(me, SW_SHOWNOACTIVATE);
+        SetWindowPos(me, HWND_TOPMOST, x, y, g_winW, g_winH,
+                     SWP_NOACTIVATE | SWP_NOCOPYBITS);
+        SyncTooltipRect(me, 0);
+        return;
     }
-    SetWindowPos(me, HWND_TOP, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
-    // keep the tooltip rect in sync with the (possibly moved) widget
-    if (g_hTooltip) {
-        RECT rc;
-        GetClientRect(me, &rc);
-        TOOLINFO ti;
-        ZeroMemory(&ti, sizeof(ti));
-        ti.cbSize   = sizeof(ti);
-        ti.hwnd     = me;
-        ti.uId      = 0;
-        ti.rect     = rc;
-        SendMessageW(g_hTooltip, TTM_NEWTOOLRECT, 0, (LPARAM)&ti);
+    // embedded: main popup stays hidden, the taskbar child carries the display
+    if (IsWindowVisible(me)) ShowWindow(me, SW_HIDE);
+    if (IsWindow(g_hTaskbar)) {
+        UINT d = DpiOfTaskbar(g_hTaskbar);
+        if (d != g_dpi) { g_dpi = d; CreateFontForDpi(); }
+    }
+
+    if (TryXamlEmbed()) {
+        g_xamlActive = TRUE;
+        g_embedded = TRUE;
+        SyncTooltipRect(g_hEmbed, 1);
+        return;
+    }
+    if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); }
+    g_xamlActive = FALSE;
+    if (!IsWindow(g_hTaskbar)) { g_embedded = FALSE; return; }
+
+    if (EnsureEmbedWindow()) {
+        PositionLegacyEmbed();
+        g_embedded = TRUE;
+        SyncTooltipRect(g_hEmbed, 1);
+    } else {
+        g_embedded = FALSE;
     }
 }
 
@@ -1349,6 +1384,34 @@ static void OnPaint(HWND hwnd)
 }
 
 // --------------------------------------------------------------- tooltip
+static void AddTooltipTool(HWND forWnd, UINT_PTR toolId)
+{
+    TOOLINFO ti;
+    if (!g_hTooltip || !IsWindow(forWnd)) return;
+    ZeroMemory(&ti, sizeof(ti));
+    ti.cbSize   = sizeof(ti);
+    ti.uFlags   = TTF_SUBCLASS;
+    ti.hwnd     = forWnd;
+    ti.uId      = toolId;
+    ti.lpszText = (LPWSTR)LPSTR_TEXTCALLBACKW;
+    GetClientRect(forWnd, &ti.rect);
+    SendMessageW(g_hTooltip, TTM_ADDTOOL, 0, (LPARAM)&ti);
+}
+
+static void SyncTooltipRect(HWND forWnd, UINT_PTR toolId)
+{
+    TOOLINFO ti;
+    RECT rc;
+    if (!g_hTooltip || !IsWindow(forWnd)) return;
+    GetClientRect(forWnd, &rc);
+    ZeroMemory(&ti, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.hwnd   = forWnd;
+    ti.uId    = toolId;
+    ti.rect   = rc;
+    SendMessageW(g_hTooltip, TTM_NEWTOOLRECT, 0, (LPARAM)&ti);
+}
+
 static void CreateTooltip(HWND hwnd, HINSTANCE hInst)
 {
     g_hTooltip = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
@@ -1356,15 +1419,7 @@ static void CreateTooltip(HWND hwnd, HINSTANCE hInst)
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
         hwnd, NULL, hInst, NULL);
     if (!g_hTooltip) return;
-    TOOLINFO ti;
-    ZeroMemory(&ti, sizeof(ti));
-    ti.cbSize   = sizeof(ti);
-    ti.uFlags   = TTF_SUBCLASS;
-    ti.hwnd     = hwnd;
-    ti.uId      = 0;
-    ti.lpszText = (LPWSTR)LPSTR_TEXTCALLBACKW;
-    GetClientRect(hwnd, &ti.rect);
-    SendMessageW(g_hTooltip, TTM_ADDTOOL, 0, (LPARAM)&ti);
+    AddTooltipTool(hwnd, 0);
     SendMessageW(g_hTooltip, TTM_SETMAXTIPWIDTH, 0, 340);
 }
 
@@ -2030,30 +2085,37 @@ static void AppendLogTail(WCHAR* out, size_t cch)
 static void CopyDiagToClipboard(HWND hwnd)
 {
     WCHAR buf[4096];
-    RECT rme = { 0, 0, 0, 0 }, rtb = { 0, 0, 0, 0 };
+    RECT rme = { 0, 0, 0, 0 }, rtb = { 0, 0, 0, 0 }, rem = { 0, 0, 0, 0 };
     if (g_hwnd)     GetWindowRect(g_hwnd, &rme);
     if (IsWindow(g_hTaskbar)) GetWindowRect(g_hTaskbar, &rtb);
+    if (IsWindow(g_hEmbed))   GetWindowRect(g_hEmbed, &rem);
     swprintf_s(buf, 4096,
         L"NetSpeedMonitor diagnostics\r\n"
         L"version=%s (original 2.5.4.0 rebuild)\r\n"
-        L"monitoring=%d floatMode=%d embedded=%d unit=%d precision=%d\r\n"
+        L"monitoring=%d floatMode=%d embedded=%d xamlActive=%d unit=%d precision=%d\r\n"
         L"iface=%lu labels=%s/%s swap=%d\r\n"
         L"hwnd=%p parent=%p visible=%d\r\n"
+        L"embed=%p embedParent=%p embedVisible=%d\r\n"
+        L"embed rect=(%ld,%ld)-(%ld,%ld)\r\n"
         L"win rect=(%ld,%ld)-(%ld,%ld)\r\n"
         L"taskbar=%p rect=(%ld,%ld)-(%ld,%ld)\r\n"
         L"dpi=%u winSize=%dx%d stackSize=%dx%d\r\n"
-        L"xamlDllLoaded=%d xamlApplyFound=%d xamlActive=%d\r\n"
+        L"xamlDllLoaded=%d xamlApplyFound=%d\r\n"
         L"text=%s\r\n",
         APP_VERSION,
-        (int)g_monitoring, (int)g_floatMode, (int)g_embedded,
+        (int)g_monitoring, (int)g_floatMode, (int)g_embedded, (int)g_xamlActive,
         g_unit, g_precision,
         (unsigned long)g_ifFilter, g_lblSent, g_lblRecv, (int)g_swapOrder,
         (void*)g_hwnd, (void*)GetParent(g_hwnd), IsWindowVisible(g_hwnd),
+        (void*)g_hEmbed,
+        (void*)(g_hEmbed ? GetParent(g_hEmbed) : NULL),
+        (int)(g_hEmbed ? IsWindowVisible(g_hEmbed) : -1),
+        (long)rem.left, (long)rem.top, (long)rem.right, (long)rem.bottom,
         (long)rme.left, (long)rme.top, (long)rme.right, (long)rme.bottom,
         (void*)g_hTaskbar, (long)rtb.left, (long)rtb.top,
         (long)rtb.right, (long)rtb.bottom,
         g_dpi, g_winW, g_winH, g_stackW, g_stackH,
-        (int)(g_hXamlDll != NULL), (int)(g_XamlApply != NULL), (int)g_xamlActive,
+        (int)(g_hXamlDll != NULL), (int)(g_XamlApply != NULL),
         g_text);
 
     {
@@ -2139,8 +2201,10 @@ static void ShowContextMenu(HWND hwnd)
                 IDM_TOOLTIP, L"Enable Toolbar Tooltip");
     AppendMenuW(m, MF_STRING | (AutostartEnabled() ? MF_CHECKED : 0),
                 IDM_AUTOSTART, L"Start with Windows");
+    AppendMenuW(m, MF_STRING | (!g_floatMode ? MF_CHECKED : 0),
+                IDM_EMBED, L"Show in taskbar (Windows 11 native)");
     AppendMenuW(m, MF_STRING | (g_floatMode ? MF_CHECKED : 0),
-                IDM_FLOAT, L"Floating mode (if taskbar widget is not visible)");
+                IDM_FLOAT, L"Floating window (above taskbar)");
     AppendMenuW(m, MF_STRING, IDM_DIAG, L"Copy diagnostics");
     AppendMenuW(m, MF_STRING, IDM_ABOUT, L"About NetSpeedMonitor");
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
@@ -2148,9 +2212,11 @@ static void ShowContextMenu(HWND hwnd)
 
     POINT p;
     GetCursorPos(&p);
-    SetForegroundWindow(hwnd);
-    TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_NONOTIFY, p.x, p.y, 0, hwnd, NULL);
-    PostMessageW(hwnd, WM_NULL, 0, 0);
+    // menu commands must land on the main window even when the right-click
+    // came from the embed child (it is WS_EX_NOACTIVATE and cannot own menus)
+    SetForegroundWindow(g_hwnd);
+    TrackPopupMenu(m, TPM_RIGHTBUTTON | TPM_NONOTIFY, p.x, p.y, 0, g_hwnd, NULL);
+    PostMessageW(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(m);
 }
 
@@ -2170,13 +2236,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             g_hbTick = 0;
             RECT rme = { 0, 0, 0, 0 };
             if (g_hwnd) GetWindowRect(g_hwnd, &rme);
-            WCHAR b[220];
-            swprintf_s(b, 220,
-                L"hb: mode=%s parent=%p vis=%d rect=(%ld,%ld)-(%ld,%ld) tb=%p",
+            WCHAR b[280];
+            swprintf_s(b, 280,
+                L"hb: mode=%s vis=%d rect=(%ld,%ld)-(%ld,%ld) tb=%p "
+                L"embed=%p par=%p evis=%d xaml=%d",
                 g_floatMode ? L"float" : L"embed",
-                (void*)GetParent(g_hwnd), IsWindowVisible(g_hwnd),
+                IsWindowVisible(g_hwnd),
                 (long)rme.left, (long)rme.top, (long)rme.right, (long)rme.bottom,
-                (void*)g_hTaskbar);
+                (void*)g_hTaskbar,
+                (void*)g_hEmbed,
+                (void*)(g_hEmbed ? GetParent(g_hEmbed) : NULL),
+                (int)(g_hEmbed ? IsWindowVisible(g_hEmbed) : -1),
+                (int)g_xamlActive);
             LogLine(b);
         }
         if (++g_saveTick >= 30) {     // traffic persisted every 30s
@@ -2252,16 +2323,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         case IDM_AUTOSTART:
             AutostartToggle(hwnd);
             break;
-        case IDM_FLOAT:
-            g_floatMode = !g_floatMode;
-            SaveSettings();
-            {
-                WCHAR b[80];
-                swprintf_s(b, 80, L"user toggled mode -> %s",
-                           g_floatMode ? L"floating" : L"embedded");
-                LogLine(b);
+        case IDM_EMBED:
+            if (g_floatMode) {
+                g_floatMode = FALSE;
+                SaveSettings();
+                LogLine(L"user mode -> embedded (taskbar child)");
+                RecalcAndPosition();
             }
-            RecalcAndPosition();
+            break;
+        case IDM_FLOAT:
+            if (!g_floatMode) {
+                g_floatMode = TRUE;
+                SaveSettings();
+                LogLine(L"user mode -> floating");
+                RecalcAndPosition();
+            }
             break;
         case IDM_DIAG:
             CopyDiagToClipboard(hwnd);
@@ -2274,8 +2350,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             MessageBoxW(hwnd,
                 L"Displays live sent and received network speed in the Windows taskbar.\r\n\r\n"
                 L"Includes interface selection, configurable units and precision,\r\n"
-                L"traffic totals and daily history, CSV import/export, tooltip,\r\n"
-                L"start-with-Windows, and an optional floating display.\r\n\r\n"
+                L"traffic totals and daily history, CSV import/export, tooltip\r\n"
+                L"and start-with-Windows. Display modes (right-click menu):\r\n"
+                L"inside the Windows 11 taskbar (native reservation, MangoDisk\r\n"
+                L"technique) or a floating window above the taskbar.\r\n\r\n"
                 L"Double-click: Data Traffic  |  Right-click: menu",
                 APP_NAME, MB_ICONINFORMATION);
             break;
@@ -2285,9 +2363,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
     case WM_DESTROY:
+        if (hwnd != g_hwnd) {              // embed child being destroyed
+            if (hwnd == g_hEmbed) g_hEmbed = NULL;
+            return 0;
+        }
         KillTimer(hwnd, TIMER_TICK);
         TrafficSave();
         TrayRemove();
+        if (IsWindow(g_hEmbed)) DestroyWindow(g_hEmbed);
         if (g_xamlActive && g_XamlRelease) { g_XamlRelease(); g_xamlActive = FALSE; }
         if (g_hXamlDll) { FreeLibrary(g_hXamlDll); g_hXamlDll = NULL; }
         LogLine(L"exit");
@@ -2422,7 +2505,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE prev, PWSTR cmd, int show)
     }
 
     RecalcAndPosition();
-    ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
+    // embedded mode shows the taskbar child instead; the main popup stays hidden
+    if (g_floatMode) ShowWindow(g_hwnd, SW_SHOWNOACTIVATE);
     TrayAdd();
 
     MSG m;
